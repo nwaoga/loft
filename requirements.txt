@@ -1,0 +1,2 @@
+psutil>=6,<8
+pathspec>=0.12,<2

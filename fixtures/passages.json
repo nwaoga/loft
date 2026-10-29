@@ -1,0 +1,7 @@
+[
+  {"path":"parking.txt","start":1,"end":3,"text":"Parking receipt. Paid £8 on 12 March 2025. Valid only on 12 March 2025 until 18:00. This receipt does not establish parking validity on any later date."},
+  {"path":"insurance.md","start":1,"end":2,"text":"Archived insurance policy: coverage began 1 May 2024 and ended 30 April 2025. No renewal confirmation is available."},
+  {"path":"laptop-invoice.txt","start":1,"end":2,"text":"Laptop invoice INV-1042, issued 10 January 2025. Total £799. Paid by card."},
+  {"path":"src/login.py","start":1,"end":3,"text":"def login(username, password):\n    return authenticate(username, password)\n# Session creation follows successful authentication."},
+  {"path":"src/payments.py","start":1,"end":3,"text":"def take_payment(order):\n    return payment_gateway.charge(order.total)\n# Payment gateway adapter handles card charges."}
+]
