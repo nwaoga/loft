@@ -26,4 +26,6 @@ The repository does not include downloaded GGUF files, llama.cpp binaries, the v
 
 Run `.venv/Scripts/python -m unittest`, `.venv/Scripts/python loft_preview.py --check`, and, when model files are installed, `.venv/Scripts/python verify_engine.py`. `verify_engine.py` writes an ignored report under `results/`. Start the app with `.venv/Scripts/python loft_preview.py --expanded`. If a model appears stuck loading, check local loopback access and `data/logs/` before changing model settings.
 
+The initial source and documentation commit is `3de5b45` on `main`, pushed to `origin/main` at `https://github.com/nwaoga/loft.git` on 29 October 2026. Before that push, `.venv/Scripts/python -m unittest` passed 19 tests and `.venv/Scripts/python loft_preview.py --check` passed the demo UI check. The real-model verification suite was not rerun for this handover; the local greeting and Chat paths were exercised separately with the installed model.
+
 No Azure DevOps project or planning files are configured in this workspace; this document tracks the local handover.
