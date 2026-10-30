@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 import io
 import json
@@ -351,6 +352,67 @@ startxref
         self.assertFalse(self.engine.root_is_stale(root))
         file.unlink()
         self.assertTrue(self.engine.root_is_stale(root))
+    def test_watcher_marks_creates_edits_and_ignores_build_noise(self):
+        from loft_watch import watch_should_mark, _Handler
+        root = self.folder
+        self.assertTrue(watch_should_mark(root, root / "notes.md"))
+        self.assertTrue(watch_should_mark(root, root / "receipt.pdf"))
+        self.assertTrue(watch_should_mark(root, root / "src" / "login.py"))
+        self.assertTrue(watch_should_mark(root, root / "src", is_directory=True))
+        self.assertFalse(watch_should_mark(root, root / "node_modules" / "pkg" / "index.js"))
+        self.assertFalse(watch_should_mark(root, root / "build" / "app.js"))
+        self.assertFalse(watch_should_mark(root, root / ".git" / "config"))
+        self.assertFalse(watch_should_mark(root, root / "photo.png"))
+        marked = []
+        handler = _Handler([str(root)], marked.append)
+        handler.consider(root / "notes.md", False)
+        handler.consider(root / "build" / "app.js", False)
+        handler.consider(root / "gone.md", False)
+        self.assertEqual(marked, [str(root), str(root)])
+        self.write("notes.md", "parking receipt")
+        self.index()
+        self.engine.note_root_changed(self.engine.roots()[0])
+        self.assertTrue(self.engine.root_is_stale(self.engine.roots()[0]))
+        self.index()
+        self.assertFalse(self.engine.root_is_stale(self.engine.roots()[0]))
+
+    def test_create_modify_and_delete_mark_the_folder(self):
+        from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileModifiedEvent, FileSystemEventHandler
+        from loft_watch import FolderWatcher
+        root = str(self.folder)
+        seen = []
+        watcher = FolderWatcher(seen.append, delay=0.05)
+        try:
+            watcher._roots = [root]
+            handler = watcher._event_handler(FileSystemEventHandler)
+            note = self.folder / "notes.md"
+            handler.on_created(FileCreatedEvent(str(note)))
+            handler.on_modified(FileModifiedEvent(str(note)))
+            handler.on_deleted(FileDeletedEvent(str(note)))
+            time.sleep(0.2)
+            self.assertEqual(seen, [root])
+            seen.clear()
+            handler.on_modified(FileModifiedEvent(str(self.folder / "photo.png")))
+            handler.on_created(FileCreatedEvent(str(self.folder / "build" / "out.js")))
+            time.sleep(0.2)
+            self.assertEqual(seen, [])
+        finally:
+            watcher.close()
+
+    def test_rapid_writes_debounce_to_one_notice(self):
+        from loft_watch import FolderWatcher
+        root = str(self.folder)
+        seen = []
+        watcher = FolderWatcher(seen.append, delay=0.25)
+        try:
+            for _ in range(6):
+                watcher._queue(root)
+                time.sleep(0.05)
+            self.assertEqual(seen, [])
+            time.sleep(0.45)
+            self.assertEqual(seen, [root])
+        finally:
+            watcher.close()
 
 
 class AnswerTests(unittest.TestCase):

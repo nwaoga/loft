@@ -328,6 +328,19 @@ class UIWorkerTests(unittest.TestCase):
         self.wait_idle()
         self.assertFalse(self.app.library_topmost)
 
+    def test_stale_notice_does_not_reindex_during_a_query(self):
+        release = threading.Event()
+        self.app.start_job(lambda cancel, emit: release.wait(2), kind="ask")
+        before = list(self.app.engine.indexed)
+        self.app.events.put(("stale", "/docs/notes"))
+        done = tk.BooleanVar(self.root, False)
+        self.root.after(150, lambda: done.set(True))
+        self.root.wait_variable(done)
+        self.assertTrue(self.app.busy)
+        self.assertEqual(self.app.engine.indexed, before)
+        release.set()
+        self.wait_idle()
+
 
 if __name__ == "__main__":
     unittest.main()
