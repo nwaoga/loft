@@ -562,7 +562,7 @@ class LoftPreview:
         window.attributes("-topmost", indexing)
         self.place_dialog(window, 680, 380)
         tk.Label(window, text="Choose what Loft can search", bg=BG, fg=TEXT, font=("Segoe UI", 16), padx=20, pady=20).pack(anchor="w")
-        tk.Label(window, text="Text, Markdown and code · stored locally · refresh after file changes",
+        tk.Label(window, text="Text, Markdown, PDF and code · stored locally · refresh after file changes",
                  bg=BG, fg=MUTED, padx=20).pack(anchor="w")
         self.folder_list = tk.Listbox(window, bg=PANEL, fg=TEXT, relief="flat", selectbackground=HOVER)
         self.folder_list.pack(fill="both", expand=True, padx=20, pady=15)

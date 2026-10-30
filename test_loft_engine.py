@@ -8,7 +8,7 @@ import json
 from unittest.mock import patch
 
 from loft_bench import ROOT, FakeEmbedding
-from loft_engine import Engine, Cancelled, chunks, streamed_answer, LocalModels, unsupported_terms, format_dropped
+from loft_engine import Engine, Cancelled, chunks, streamed_answer, LocalModels, unsupported_terms, format_dropped, read_indexed_text
 
 
 class TestModels:
@@ -177,6 +177,60 @@ class EngineTests(unittest.TestCase):
         self.assertEqual("".join(p[2] for p in passages), text)
         self.assertTrue(all(len(p[2]) <= 1000 for p in passages))
         self.assertEqual(passages[-1][1], 3)
+    def test_code_chunks_break_before_the_next_definition_and_can_overlap(self):
+        intro = "intro line stays with the header\n" * 40
+        text = intro + "def login(username):\n    return authenticate(username)\n"
+        passages = list(chunks(text, code=True))
+        self.assertGreaterEqual(len(passages), 2)
+        self.assertTrue(passages[-1][2].lstrip().startswith("def login"))
+        self.assertNotIn("def login", passages[0][2])
+        self.assertLessEqual(passages[-1][0], text[:text.index("def login")].count("\n") + 1)
+        overlapped = list(chunks("alpha\nbeta\ngamma\ndelta\n", maximum=12, overlap_lines=1))
+        self.assertGreaterEqual(len(overlapped), 2)
+        self.assertTrue(overlapped[1][2].startswith(overlapped[0][2].splitlines(keepends=True)[-1]))
+        self.assertLess(overlapped[1][0], overlapped[1][1])
+    def test_pdf_text_is_searchable_and_secrets_stay_out(self):
+        receipt = self._pdf("Parking receipt paid eight pounds")
+        (self.folder / "receipt.pdf").write_bytes(receipt)
+        (self.folder / "secret.pdf").write_bytes(self._pdf("api_key = AAAAAAAAAAAAAAAA"))
+        (self.folder / "broken.pdf").write_bytes(b"%PDF-1.4\nnot a real pdf")
+        (self.folder / "notes.md").write_bytes(b"hello\0world")
+        text, reason = read_indexed_text(self.folder / "receipt.pdf", receipt + b"\0")
+        self.assertIsNone(reason)
+        self.assertIn("Page 1", text)
+        self.assertIn("Parking receipt", text)
+        self.assertEqual(read_indexed_text(self.folder / "notes.md", b"hello\0world")[1], "binary")
+        stats = self.index()
+        reasons = {item["name"]: item["reason"] for item in stats["dropped"]}
+        self.assertEqual(reasons["secret.pdf"], "likely secret")
+        self.assertEqual(reasons["broken.pdf"], "unreadable PDF")
+        hits = self.engine.retrieve("parking receipt", "Documents", self.cancel, lambda *_: None)
+        self.assertTrue(hits[0]["path"].endswith("receipt.pdf"))
+        self.assertIn("Page 1", hits[0]["text"])
+        self.assertIn("eight pounds", hits[0]["text"])
+    def _pdf(self, sentence):
+        return f"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 144]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length {len(sentence) + 32}>>stream
+BT /F1 18 Tf 40 80 Td ({sentence}) Tj ET
+endstream
+endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000052 00000 n 
+0000000101 00000 n 
+0000000224 00000 n 
+0000000350 00000 n 
+trailer<</Size 6/Root 1 0 R>>
+startxref
+419
+%%EOF
+""".encode()
     def test_search_names_each_wait(self):
         self.write("notes.md", "Run python loft_preview.py --check to exercise the preview.")
         self.index()
