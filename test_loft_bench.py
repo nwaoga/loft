@@ -1,7 +1,10 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
-from loft_bench import FakeEmbedding, Index
+from unittest.mock import patch
+from urllib.error import HTTPError
+from loft_bench import FakeEmbedding, Index, post
 
 
 class IndexTests(unittest.TestCase):
@@ -44,6 +47,12 @@ class IndexTests(unittest.TestCase):
             self.index.sync([dict(self.docs[0], text="changed")])
         self.index.embedder.embed = original
         self.assertEqual(self.index.sync(self.docs), 0)
+
+    def test_post_reports_http_error_body(self):
+        error = HTTPError("http://127.0.0.1/x", 500, "err", None, io.BytesIO(b'{"error":"bad grammar"}'))
+        with patch("loft_bench.HTTP.open", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "bad grammar"):
+                post(9, "/v1/chat/completions", {"x": 1})
 
 
 if __name__ == "__main__":
