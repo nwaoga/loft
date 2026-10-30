@@ -280,16 +280,21 @@ class LocalModels:
             emit("warning", "No source was cited for this answer. Read the passages before relying on it.")
         return answer
 
-    def chat(self, endpoint, message, cancel):
+    def chat(self, endpoint, message, cancel, history=None):
         port, api_key = endpoint
         check_cancel(cancel)
         instruction = ("You are Loft, a concise and friendly local assistant. Reply naturally to greetings and general questions. "
                        "This chat has no file evidence. Do not claim to have read, searched, or verified the user's files. "
                        "If asked about the user's personal facts, documents, travel, purchases, or code, say you need file search to answer and do not guess.")
+        messages = [{"role": "system", "content": instruction}]
+        for turn in (history or [])[-6:]:
+            role = turn.get("role")
+            content = str(turn.get("content") or "").strip()[:1000]
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message[:1000]})
         payload = {"model": "local", "stream": False, "temperature": 0.2, "max_tokens": 120,
-                   "messages": [
-                       {"role": "system", "content": instruction},
-                       {"role": "user", "content": message[:1000]}]}
+                   "messages": messages}
         with post(port, "/v1/chat/completions", payload, api_key) as response:
             result = json.load(response)
         check_cancel(cancel)
@@ -467,11 +472,16 @@ class Engine:
             db.executescript("""
               CREATE TABLE IF NOT EXISTS roots(path TEXT PRIMARY KEY);
               CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
-              CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, root TEXT, digest TEXT, kind TEXT);
+              CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, root TEXT, digest TEXT, kind TEXT, mtime INTEGER, size INTEGER);
               CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, path TEXT, start INTEGER, end INTEGER, text TEXT, vector TEXT);
               CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
               CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, tokenize='unicode61');
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+            if "mtime" not in columns:
+                db.execute("ALTER TABLE files ADD COLUMN mtime INTEGER")
+            if "size" not in columns:
+                db.execute("ALTER TABLE files ADD COLUMN size INTEGER")
 
     @contextmanager
     def connect(self):
@@ -512,6 +522,25 @@ class Engine:
     def root_count(self, root):
         with self.connect() as db:
             return db.execute("SELECT count(*) FROM files WHERE root=?", (root,)).fetchone()[0]
+
+    def root_is_stale(self, root):
+        """True when an indexed file's size or mtime no longer matches the index.
+
+        This is a manual check, not a folder watcher. New files that were never
+        indexed stay invisible until the user refreshes.
+        """
+        with self.connect() as db:
+            rows = db.execute("SELECT path, mtime, size FROM files WHERE root=?", (root,)).fetchall()
+        for path, mtime, size in rows:
+            if mtime is None or size is None:
+                continue
+            try:
+                current = Path(path).stat()
+            except OSError:
+                return True
+            if current.st_mtime_ns != mtime or current.st_size != size:
+                return True
+        return False
 
     def remove(self, root):
         with self.connect() as db:
@@ -603,10 +632,13 @@ class Engine:
                 previous = db.execute("SELECT digest FROM files WHERE path=?", (name,)).fetchone()
                 if previous and previous[0] == digest:
                     stats["unchanged"] += 1
+                    db.execute("UPDATE files SET mtime=?, size=? WHERE path=?", (before.st_mtime_ns, before.st_size, name))
                     continue
                 emit("status", f"Indexing {path.name}…")
                 self.delete_file(db, name)
-                db.execute("INSERT INTO files VALUES (?,?,?,?)", (name, str(root), digest, "Documents" if path.suffix.lower() in DOCUMENTS else "Code"))
+                kind = "Documents" if path.suffix.lower() in DOCUMENTS else "Code"
+                db.execute("INSERT INTO files(path, root, digest, kind, mtime, size) VALUES (?,?,?,?,?,?)",
+                           (name, str(root), digest, kind, before.st_mtime_ns, before.st_size))
                 for start, end, passage in chunks(text):
                     vector = self.validate_vector(db, embedder.embed(passage))
                     cursor = db.execute("INSERT INTO chunks(path,start,end,text,vector) VALUES (?,?,?,?,?)", (name, start, end, passage, json.dumps(vector)))
@@ -756,7 +788,7 @@ class Engine:
             emit("status", "Local answer · check the supporting sources")
         return {"hits": hits, "answer": answer, "seconds": time.perf_counter()-started, "unsupported": gaps}
 
-    def chat_question(self, question, cancel, emit):
+    def chat_question(self, question, cancel, emit, history=None):
         started = time.perf_counter()
         question = question.strip()[:1000]
         if not question:
@@ -764,7 +796,7 @@ class Engine:
         emit("status", "Loading the answer model…")
         with self.models.session("answer", cancel, emit) as endpoint:
             emit("status", "Writing a reply…")
-            answer = self.models.chat(endpoint, question, cancel)
+            answer = self.models.chat(endpoint, question, cancel, history)
         emit("chat", answer)
         emit("status", "Local chat · not based on your files")
         return {"hits": [], "answer": answer, "seconds": time.perf_counter()-started}

@@ -11,7 +11,7 @@ import subprocess
 import traceback
 from pathlib import Path
 import tkinter as tk
-from tkinter import scrolledtext, filedialog
+from tkinter import scrolledtext, filedialog, messagebox
 
 from loft_bench import ROOT, FakeEmbedding, Index
 from loft_engine import format_dropped
@@ -187,6 +187,10 @@ class LoftPreview:
         self.sources_open = False
         self.support_gaps = []
         self.support_note = None
+        self.chat_history = []
+        self.pending_chat = ""
+        self._stale_checked = 0.0
+        self.library_topmost = False
         self.pending_folders = []
         self.folder_rows = []
         self._status_error = False
@@ -262,8 +266,21 @@ class LoftPreview:
         self.status = tk.Label(self.body, bg=BG, fg=MUTED, anchor="w", justify="left",
                                font=("Segoe UI", 10), wraplength=490)
         self.status.pack(fill="x", pady=(0, 4))
-        self.results = tk.Frame(self.body, bg=BG)
+        self.scroll_host = tk.Frame(self.body, bg=BG)
+        self.scroll_host.pack(fill="x")
+        self.scroll = tk.Canvas(self.scroll_host, bg=BG, height=1, highlightthickness=0, bd=0)
+        self.vbar = tk.Scrollbar(self.scroll_host, orient="vertical", command=self.scroll.yview,
+                                 bg=PANEL, troughcolor=BG, activebackground=HOVER, highlightthickness=0)
+        self.scroll.configure(yscrollcommand=self._on_results_scroll)
+        self.scroll.pack(side="left", fill="x", expand=True)
+        self.scroll_inner = tk.Frame(self.scroll, bg=BG)
+        self.scroll_window = self.scroll.create_window((0, 0), window=self.scroll_inner, anchor="nw")
+        self.results = tk.Frame(self.scroll_inner, bg=BG)
         self.results.pack(fill="x")
+        self.scroll.bind("<Configure>", self._sync_scroll_width)
+        self.root.bind_all("<MouseWheel>", self._on_results_wheel)
+        self.root.bind_all("<Button-4>", self._on_results_wheel)
+        self.root.bind_all("<Button-5>", self._on_results_wheel)
         footer = self.footer = tk.Frame(self.body, bg=BG)
         footer.pack(fill="x", pady=(8, 0))
         self.library_label = tk.Label(footer, text="Sample library · 5 files · Search only" if demo else f"Your library · {self.engine.count()} files · On device",
@@ -368,6 +385,7 @@ class LoftPreview:
             return
         try:
             self.drain_events()
+            self.refresh_stale_markers()
         except Exception:
             traceback.print_exc()
             if self.worker is None or not self.worker.is_alive():
@@ -406,12 +424,14 @@ class LoftPreview:
                     self.awaiting_empty_note = False
                 changed = True
             elif kind == "chat":
-                self.clear_results()
                 self.awaiting_empty_note = False
-                tk.Label(self.results, text="Chat · not based on your files", bg=BG, fg=ACCENT,
-                         font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
-                tk.Label(self.results, text=value, bg=BG, fg=TEXT, wraplength=480,
-                         justify="left", font=("Segoe UI", 11)).pack(anchor="w", pady=(4, 10))
+                if self.pending_chat:
+                    self.chat_history.append({"role": "user", "content": self.pending_chat})
+                    self.pending_chat = ""
+                self.chat_history.append({"role": "assistant", "content": value})
+                self.chat_history = self.chat_history[-6:]
+                self.clear_results()
+                self.render_chat_transcript()
                 self.root.lift()
                 changed = True
             elif kind == "support":
@@ -492,6 +512,7 @@ class LoftPreview:
                     self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
                 if self.library_window and self.library_window.winfo_exists():
                     self.refresh_library_list()
+                self.set_library_topmost(False)
                 if self.pending_folders and not cancelled:
                     self.start_next_pending_folder()
                 elif cancelled and self.pending_folders:
@@ -529,13 +550,16 @@ class LoftPreview:
             self.answer_gap_note.pack(anchor="w", before=self.full_answer)
 
     def manage_library(self):
+        indexing = bool(self.busy and self.job_kind == "index")
         if self.library_window and self.library_window.winfo_exists():
+            self.set_library_topmost(indexing)
             self.library_window.lift()
             return
         window = self.library_window = tk.Toplevel(self.root)
         window.title("Loft · Your folders")
         window.configure(bg=BG)
-        window.attributes("-topmost", True)
+        self.library_topmost = indexing
+        window.attributes("-topmost", indexing)
         self.place_dialog(window, 680, 380)
         tk.Label(window, text="Choose what Loft can search", bg=BG, fg=TEXT, font=("Segoe UI", 16), padx=20, pady=20).pack(anchor="w")
         tk.Label(window, text="Text, Markdown and code · stored locally · refresh after file changes",
@@ -561,16 +585,28 @@ class LoftPreview:
         if self.library_window and self.library_window.winfo_exists():
             self.library_status.configure(text=message, fg=color)
 
+    def set_library_topmost(self, enabled):
+        self.library_topmost = bool(enabled)
+        if self.library_window and self.library_window.winfo_exists():
+            try:
+                self.library_window.attributes("-topmost", self.library_topmost)
+            except tk.TclError:
+                pass
+
     def refresh_library_list(self):
         if not (self.library_window and self.library_window.winfo_exists()):
             return
+        selected = self.selected_folder()
         self.folder_list.delete(0, "end")
         self.folder_rows = []
         seen = set()
         for folder in self.engine.roots():
             count = self.engine.root_count(folder)
             noun = "file" if count == 1 else "files"
-            self.folder_list.insert("end", f"{folder}    ·    {count} {noun}")
+            label = f"{folder}    ·    {count} {noun}"
+            if getattr(self.engine, "root_is_stale", None) and self.engine.root_is_stale(folder):
+                label += "    ·    changed · refresh to update"
+            self.folder_list.insert("end", label)
             self.folder_rows.append(folder)
             seen.add(folder)
         for folder in self.pending_folders:
@@ -578,6 +614,8 @@ class LoftPreview:
                 continue
             self.folder_list.insert("end", f"{folder}    ·    waiting to index")
             self.folder_rows.append(folder)
+        if selected:
+            self.select_folder_row(selected)
 
     def selected_folder(self):
         if not (self.library_window and self.library_window.winfo_exists()):
@@ -652,6 +690,9 @@ class LoftPreview:
     def start_index(self, folder):
         if self.start_job(lambda cancel, emit, folder=folder: self.engine.index_folder(folder, cancel, emit), kind="index"):
             self.show_stop()
+            self.set_library_topmost(True)
+            if self.library_window and self.library_window.winfo_exists():
+                self.library_window.lift()
             self.note_phase("Loading the search model…")
             self.set_library_status("Indexing… loading the search model", ACCENT)
             return
@@ -699,9 +740,14 @@ class LoftPreview:
             self.set_library_status("An operation is running. Use Stop, then remove the folder.", MUTED)
             return
         if folder in self.pending_folders and folder not in self.engine.roots():
+            if not self.confirm_remove(folder, 0, waiting=True):
+                return
             self.pending_folders.remove(folder)
             self.refresh_library_list()
             self.set_library_status("Removed the folder that was waiting to index.", MUTED)
+            return
+        count = self.engine.root_count(folder) if folder in self.engine.roots() else 0
+        if not self.confirm_remove(folder, count):
             return
         self.engine.remove(folder)
         if folder in self.pending_folders:
@@ -710,8 +756,18 @@ class LoftPreview:
         self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
         self.clear_results()
         self._status_error = False
-        self.status.configure(text="Folder removed from Loft. Original files are unchanged.", fg=MUTED)
+        noun = "file" if count == 1 else "files"
+        self.status.configure(text=f"Folder removed from Loft. {count} indexed {noun} are no longer searchable. Original files are unchanged.", fg=MUTED)
         self.fit_content()
+
+    def confirm_remove(self, folder, count, waiting=False):
+        if waiting:
+            message = "This folder is waiting to index and is not searchable yet. Remove it from the list?"
+        else:
+            noun = "file" if count == 1 else "files"
+            message = (f"Remove this folder from search?\n\n{count} indexed {noun} will no longer be searchable. "
+                       "Original files stay on disk.")
+        return messagebox.askyesno("Loft · Remove folder", message, parent=self.library_window)
 
     def update_placeholder(self, *_):
         if self.question.get():
@@ -1023,12 +1079,67 @@ class LoftPreview:
         self.apply_material()
 
     def fit_content(self):
-        if self.expanded:
-            self.cancel_animation()
-            self.canvas.itemconfigure(self.body_id, width=512)
-            self.root.update_idletasks()
-            self.layout(560, self.body.winfo_reqheight()+42)
-            self.finish_transition()
+        if self.closed or not self.expanded:
+            return
+        try:
+            if not self.root.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self.cancel_animation()
+        self.canvas.itemconfigure(self.body_id, width=512)
+        self.root.update_idletasks()
+        self.size_results_viewport()
+        self.root.update_idletasks()
+        self.layout(560, self.body.winfo_reqheight()+42)
+        self.finish_transition()
+
+    def size_results_viewport(self):
+        """Grow the results area with its content, and scroll once the screen is full."""
+        self.root.update_idletasks()
+        inner = max(self.scroll_inner.winfo_reqheight(), 1)
+        chrome = max(self.body.winfo_reqheight() - int(self.scroll.cget("height")), 0)
+        screens = monitors()
+        if self.origin is None:
+            home = next(screen for screen in screens if screen["primary"])
+            limit = home["bottom"] - home["top"] - 20
+        else:
+            limit = 900
+        viewport = max(1, min(inner, max(80, limit - 42 - chrome)))
+        self.scroll.configure(height=viewport)
+        width = max(self.scroll.winfo_width(), 480)
+        self.scroll.itemconfigure(self.scroll_window, width=width)
+        self.scroll.configure(scrollregion=(0, 0, width, inner))
+        overflowing = inner > viewport + 2
+        if overflowing and not self.vbar.winfo_ismapped():
+            self.vbar.pack(side="right", fill="y")
+        elif not overflowing and self.vbar.winfo_ismapped():
+            self.vbar.pack_forget()
+            self.scroll.yview_moveto(0)
+
+    def _sync_scroll_width(self, event=None):
+        if event is not None and event.width > 1:
+            self.scroll.itemconfigure(self.scroll_window, width=event.width)
+
+    def _on_results_scroll(self, first, last):
+        self.vbar.set(first, last)
+
+    def _pointer_over_results(self):
+        widget = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        while widget is not None:
+            if widget == self.scroll_host:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_results_wheel(self, event):
+        if not self.expanded or not self.vbar.winfo_ismapped() or not self._pointer_over_results():
+            return
+        if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+            self.scroll.yview_scroll(-1, "units")
+        else:
+            self.scroll.yview_scroll(1, "units")
+        return "break"
 
     def cancel_animation(self):
         if self.animation_timer is not None:
@@ -1069,6 +1180,8 @@ class LoftPreview:
         self.expanded = True
         self.canvas.itemconfigure(self.body_id, width=512)
         self.root.update_idletasks()
+        self.size_results_viewport()
+        self.root.update_idletasks()
         self.transition(560, self.body.winfo_reqheight()+42)
         self.root.lift()
 
@@ -1085,9 +1198,10 @@ class LoftPreview:
         self.support_gaps = []
         self.support_note = None
         previous = self.results
-        self.results = tk.Frame(self.body, bg=BG, height=1)
+        self.results = tk.Frame(self.scroll_inner, bg=BG, height=1)
         self.results.pack(fill="x", before=previous)
         previous.destroy()
+        self.scroll.yview_moveto(0)
 
     def present_card(self, caption, text):
         card = tk.Frame(self.results, bg=HOVER, padx=12, pady=8)
@@ -1310,7 +1424,11 @@ class LoftPreview:
         # Chat loads a model. Don't send just because the tab was clicked.
         if scope == "Chat":
             self._status_error = False
+            self.pending_chat = ""
+            self.clear_results()
+            self.render_chat_transcript()
             self.note_phase("Chat doesn't use your files. Press Enter to send.")
+            self.fit_content()
             return
         if self.question.get().strip():
             self.search()
@@ -1329,7 +1447,10 @@ class LoftPreview:
             self.clear_results()
             scope = self.scope
             if scope == "Chat":
-                operation = lambda cancel, emit: self.engine.chat_question(question, cancel, emit)
+                self.pending_chat = question
+                self.render_chat_transcript()
+                history = [dict(turn) for turn in self.chat_history]
+                operation = lambda cancel, emit, history=history: self.engine.chat_question(question, cancel, emit, history)
                 kind, phase = "chat", "Loading the answer model…"
             else:
                 operation = lambda cancel, emit: self.engine.ask(question, scope, cancel, emit)
@@ -1396,9 +1517,36 @@ class LoftPreview:
         except OSError as exc:
             self.status.configure(text=f"Could not open the folder: {exc}", fg=ERROR)
 
+    def render_chat_transcript(self):
+        tk.Label(self.results, text="Chat · not based on your files", bg=BG, fg=ACCENT,
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+        turns = list(self.chat_history)
+        if self.pending_chat:
+            turns.append({"role": "user", "content": self.pending_chat})
+        if not turns:
+            tk.Label(self.results, text="Press Enter to send. Earlier file answers are not part of this chat.",
+                     bg=BG, fg=MUTED, wraplength=480, justify="left", anchor="w",
+                     font=("Segoe UI", 10)).pack(anchor="w", pady=(6, 4))
+            return
+        for turn in turns[-6:]:
+            who = "You" if turn["role"] == "user" else "Loft"
+            tk.Label(self.results, text=f"{who}\n{turn['content']}", bg=BG, fg=TEXT, wraplength=480,
+                     justify="left", anchor="w", font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
+
+    def refresh_stale_markers(self):
+        if self.demo or self.busy or not (self.library_window and self.library_window.winfo_exists()):
+            return
+        now = time.monotonic()
+        if now - self._stale_checked < 3:
+            return
+        self._stale_checked = now
+        self.refresh_library_list()
+
     def close(self):
         self.closed = True
         self.cancel_work.set()
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.unbind_all(sequence)
         if self.event_timer is not None:
             self.root.after_cancel(self.event_timer)
         self.cancel_animation()

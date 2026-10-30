@@ -18,8 +18,9 @@ class TestModels:
     def embed(self, text, query=False):
         self.calls += 1
         return FakeEmbedding().embed(text)
-    def chat(self, endpoint, message, cancel):
+    def chat(self, endpoint, message, cancel, history=None):
         self.calls += 1
+        self.history = history
         return "Hello from the model."
     @contextmanager
     def session(self, kind, cancel, emit=None):
@@ -285,6 +286,19 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.models.calls, calls)
 
 
+    def test_edit_marks_folder_stale_until_reindexed(self):
+        file = self.write("parking.md", "parking receipt")
+        self.index()
+        root = self.engine.roots()[0]
+        self.assertFalse(self.engine.root_is_stale(root))
+        file.write_text("parking receipt\nedited\n", encoding="utf-8")
+        self.assertTrue(self.engine.root_is_stale(root))
+        self.index()
+        self.assertFalse(self.engine.root_is_stale(root))
+        file.unlink()
+        self.assertTrue(self.engine.root_is_stale(root))
+
+
 class AnswerTests(unittest.TestCase):
     def test_partial_json_escape_decoding(self):
         answer = 'Line one\n"quoted" \\ folder and café'
@@ -381,6 +395,25 @@ class AnswerTests(unittest.TestCase):
                 models.register_answer({"file": str(custom.resolve()), "title": "custom", "repo": "Local file",
                                          "bytes": custom.stat().st_size, "sha256": "abc", "license": "Check model licence"})
                 self.assertEqual(models.selected_answer()["file"], str(custom.resolve()))
+
+    def test_chat_sends_the_recent_transcript(self):
+        seen = {}
+        def fake_post(port, route, body, api_key=None):
+            seen["messages"] = body["messages"]
+            return io.BytesIO(b'{"choices":[{"message":{"content":"Second reply"}}]}')
+        history = [{"role": "user", "content": "First question"},
+                   {"role": "assistant", "content": "First reply"}]
+        with patch("loft_engine.post", fake_post):
+            answer = LocalModels().chat((9, "key"), "Second question", threading.Event(), history)
+        self.assertEqual(answer, "Second reply")
+        roles = [message["role"] for message in seen["messages"]]
+        self.assertEqual(roles, ["system", "user", "assistant", "user"])
+        self.assertEqual(seen["messages"][1]["content"], "First question")
+        self.assertEqual(seen["messages"][-1]["content"], "Second question")
+        long = [{"role": "user", "content": f"turn {i}"} for i in range(8)]
+        with patch("loft_engine.post", fake_post):
+            LocalModels().chat((9, "key"), "Now", threading.Event(), long)
+        self.assertEqual([message["content"] for message in seen["messages"][1:-1]], [f"turn {i}" for i in range(2, 8)])
 
     def test_invalid_model_source_rejected(self):
         with patch("loft_engine.post", side_effect=[io.BytesIO(b'{"tokens":[1]}'), self.response(["S99"])]):
