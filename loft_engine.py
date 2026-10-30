@@ -21,6 +21,9 @@ from pathspec import GitIgnoreSpec
 from loft_bench import ROOT, Server, normalize, post
 
 DOCUMENTS = {".txt", ".md", ".markdown", ".rst", ".csv"}
+PDF = {".pdf"}
+TEXT_LIMIT = 1024 * 1024
+PDF_LIMIT = 20 * 1024 * 1024
 CODE = {".py", ".js", ".jsx", ".ts", ".tsx", ".cs", ".java", ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".swift", ".kt", ".rb", ".php", ".html", ".css", ".scss", ".sql", ".sh", ".ps1", ".yaml", ".yml", ".toml", ".json"}
 SKIP_DIRS = {"node_modules", "vendor", "bin", "obj", "dist", "build", "target", "__pycache__", "runtime", "models", "results", "data", "coverage"}
 # Match secret-like name segments, not substrings such as "tokenizer.py".
@@ -374,23 +377,114 @@ def unsupported_terms(answer, passages, limit=8):
     return gaps
 
 
-def chunks(text, maximum=1000):
-    """Bounded passages with original one-based line ranges (not AST parsing)."""
+def code_boundary(line):
+    """True for a low-indent definition. Not a full parser."""
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+    if indent > 4:
+        return False
+    return stripped.startswith((
+        "def ", "async def ", "class ", "function ", "export default function ",
+        "export function ", "export class ", "pub fn ", "fn ", "impl ",
+        "type ", "interface ", "struct ", "enum ",
+    ))
+
+
+def chunks(text, maximum=1000, overlap_lines=0, code=False):
+    """Bounded passages with original one-based line ranges.
+
+    Code files prefer to break before the next definition once a passage is
+    already substantial. overlap_lines repeats that many source lines at the
+    start of the next passage. This is line-oriented, not AST parsing.
+    """
     lines = text.splitlines(keepends=True)
-    content, start, end = "", 1, 1
+    if not lines:
+        if text.strip():
+            yield 1, 1, text
+        return
+    blocks, current, size = [], [], 0
+
+    def close():
+        nonlocal current, size
+        if any(piece.strip() for _, piece in current):
+            blocks.append(current)
+        current, size = [], 0
+
     for number, line in enumerate(lines, 1):
-        for offset in range(0, len(line), maximum):
-            piece = line[offset:offset+maximum]
-            if content and len(content) + len(piece) > maximum:
-                if content.strip():
-                    yield start, end, content
-                content = ""
-            if not content:
-                start = number
-            content += piece
-            end = number
-    if content.strip():
-        yield start, end, content
+        if code and current and code_boundary(line) and size >= min(200, maximum // 2):
+            close()
+        parts = [line[offset:offset + maximum] for offset in range(0, len(line), maximum)] or [""]
+        for piece in parts:
+            if current and size + len(piece) > maximum:
+                close()
+            current.append((number, piece))
+            size += len(piece)
+    close()
+    for index, block in enumerate(blocks):
+        if overlap_lines and index:
+            previous = blocks[index - 1]
+            seen_numbers = []
+            for lineno, _piece in previous:
+                if not seen_numbers or seen_numbers[-1] != lineno:
+                    seen_numbers.append(lineno)
+            keep = set(seen_numbers[-overlap_lines:])
+            block_lines = {lineno for lineno, _piece in block}
+            prefix = [(lineno, piece) for lineno, piece in previous if lineno in keep and lineno not in block_lines]
+            block = prefix + block
+        yield block[0][0], block[-1][0], "".join(piece for _, piece in block)
+
+
+def extract_pdf_text(raw):
+    """Local PDF text via pypdf. No network and no license key.
+
+    Page numbers are written into the extracted text because a PDF has no
+    source line numbers. Encrypted files are refused rather than guessed.
+    """
+    import logging
+    from io import BytesIO
+    from pypdf import PdfReader
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
+    try:
+        reader = PdfReader(BytesIO(raw))
+    except Exception as exc:
+        raise ValueError("unreadable PDF") from exc
+    if reader.is_encrypted:
+        raise ValueError("encrypted PDF")
+    pages = []
+    try:
+        page_list = list(enumerate(reader.pages, 1))
+    except Exception as exc:
+        raise ValueError("unreadable PDF") from exc
+    for number, page in page_list:
+        try:
+            page_text = page.extract_text() or ""
+        except Exception as exc:
+            raise ValueError("unreadable PDF") from exc
+        if page_text.strip():
+            pages.append(f"Page {number}\n{page_text.strip()}\n")
+    if not pages:
+        raise ValueError("no extractable text")
+    return "\n".join(pages)
+
+
+def read_indexed_text(path, raw):
+    """Return (text, drop_reason). drop_reason is None when the file can be indexed."""
+    if path.suffix.lower() in PDF:
+        try:
+            text = extract_pdf_text(raw)
+        except ValueError as exc:
+            return "", str(exc)
+        if SECRET_CONTENT.search(text):
+            return "", "likely secret"
+        return text, None
+    if b"\0" in raw:
+        return "", "binary"
+    if SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
+        return "", "likely secret"
+    try:
+        return raw.decode("utf-8-sig"), None
+    except UnicodeDecodeError:
+        return "", "not UTF-8"
 
 
 def linked(path):
@@ -449,7 +543,7 @@ def iter_files(root, cancel, drops=None):
         dirs[:] = kept
         for name in sorted(filenames):
             path = directory / name
-            if name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE:
+            if name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE | PDF:
                 continue
             if SECRET_NAME.search(name):
                 note_drop(drops, rel(path), "likely secret")
@@ -591,9 +685,10 @@ class Engine:
                     label = path.name
                 try:
                     before = path.stat()
-                    if before.st_size > 1024*1024:
+                    limit = PDF_LIMIT if path.suffix.lower() in PDF else TEXT_LIMIT
+                    if before.st_size > limit:
                         stats["skipped"] += 1
-                        note_drop(drops, label, "over 1 MB")
+                        note_drop(drops, label, "over 20 MB" if path.suffix.lower() in PDF else "over 1 MB")
                         continue
                     raw = path.read_bytes()
                     after = path.stat()
@@ -607,25 +702,16 @@ class Engine:
                     note_drop(drops, label, "unreadable")
                     seen.add(name)
                     continue
-                if len(raw) > 1024*1024:
+                if len(raw) > limit:
                     stats["skipped"] += 1
-                    note_drop(drops, label, "over 1 MB")
+                    note_drop(drops, label, "over 20 MB" if path.suffix.lower() in PDF else "over 1 MB")
                     continue
                 if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
                     raise RuntimeError(f"File changed during indexing; refresh again: {path.name}")
-                if b"\0" in raw:
+                text, reason = read_indexed_text(path, raw)
+                if reason:
                     stats["skipped"] += 1
-                    note_drop(drops, label, "binary")
-                    continue
-                if SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
-                    stats["skipped"] += 1
-                    note_drop(drops, label, "likely secret")
-                    continue
-                try:
-                    text = raw.decode("utf-8-sig")
-                except UnicodeDecodeError:
-                    stats["skipped"] += 1
-                    note_drop(drops, label, "not UTF-8")
+                    note_drop(drops, label, reason)
                     continue
                 seen.add(name)
                 digest = hashlib.sha256(raw).hexdigest()
@@ -636,10 +722,11 @@ class Engine:
                     continue
                 emit("status", f"Indexing {path.name}…")
                 self.delete_file(db, name)
-                kind = "Documents" if path.suffix.lower() in DOCUMENTS else "Code"
+                kind = "Documents" if path.suffix.lower() in DOCUMENTS | PDF else "Code"
                 db.execute("INSERT INTO files(path, root, digest, kind, mtime, size) VALUES (?,?,?,?,?,?)",
                            (name, str(root), digest, kind, before.st_mtime_ns, before.st_size))
-                for start, end, passage in chunks(text):
+                code = path.suffix.lower() in CODE
+                for start, end, passage in chunks(text, code=code, overlap_lines=2 if code else 0):
                     vector = self.validate_vector(db, embedder.embed(passage))
                     cursor = db.execute("INSERT INTO chunks(path,start,end,text,vector) VALUES (?,?,?,?,?)", (name, start, end, passage, json.dumps(vector)))
                     db.execute("INSERT INTO words(rowid,text) VALUES (?,?)", (cursor.lastrowid, passage))
