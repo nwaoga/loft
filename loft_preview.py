@@ -2,11 +2,13 @@
 import argparse
 import json
 import re
+import sqlite3
 import sys
 import time
 import queue
 import threading
 import subprocess
+import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import scrolledtext, filedialog
@@ -20,6 +22,7 @@ TEXT = "#f1f2f4"
 MUTED = "#a0a5af"
 ACCENT = "#b8d8ca"
 HOVER = "#30343a"
+ERROR = "#f0b4a8"
 STOP = set("a an the i my have has is are was were for to of in on does do where when which files involved taking today me find paid".split())
 CODE_WORDS = set("def class return if elif else for while import from as try except with lambda pass break continue and or not in True False None python powershell pwsh".split())
 
@@ -181,6 +184,10 @@ class LoftPreview:
         self.sources_detail = None
         self.sources_toggle = None
         self.sources_open = False
+        self.pending_folders = []
+        self.folder_rows = []
+        self._status_error = False
+        self.awaiting_empty_note = False
         self.origin = None
         self._press = None
         self.use_settings = use_settings
@@ -195,7 +202,7 @@ class LoftPreview:
         root.overrideredirect(True)
         root.attributes("-topmost", self.topmost)
         root.protocol("WM_DELETE_WINDOW", self.close)
-        root.bind("<Escape>", lambda _: self.collapse())
+        root.bind("<Escape>", self.on_escape)
         root.bind("<Control-q>", lambda _: self.close())
         root.bind("<Control-k>", lambda _: self.focus_search())
         root.bind("<Command-k>", lambda _: self.focus_search()) if sys.platform == "darwin" else None
@@ -205,11 +212,13 @@ class LoftPreview:
         self.body_id = self.canvas.create_window(24, 18, window=self.body, anchor="nw")
         self.compact = tk.Frame(self.canvas, bg=BG)
         self.compact_id = self.canvas.create_window(18, 5, window=self.compact, anchor="nw")
-        compact_title = tk.Label(self.compact, text="loft    Ask your files    Ctrl+K", bg=BG, fg=TEXT,
-                                 font=("Segoe UI", 10), cursor="fleur")
-        compact_title.pack(side="left", padx=(4, 0))
-        self.bind_drag(compact_title, self.focus_search)
-        self.button(self.compact, "×", self.close, muted=True).pack(side="left")
+        self.compact_title = tk.Label(self.compact, text="loft    Ask your files    Ctrl+K", bg=BG, fg=TEXT,
+                                      font=("Segoe UI", 10), cursor="fleur")
+        self.compact_title.pack(side="left", padx=(4, 0))
+        self.bind_drag(self.compact_title, self.focus_search)
+        self.compact_stop = self.button(self.compact, "Stop", lambda: self.cancel_work.set(), muted=True)
+        self.compact_close = self.button(self.compact, "×", self.close, muted=True)
+        self.compact_close.pack(side="left")
         header = self.header = tk.Frame(self.body, bg=BG, cursor="fleur")
         header.pack(fill="x")
         self.bind_drag(header)
@@ -237,12 +246,12 @@ class LoftPreview:
         self.placeholder.place(x=0, rely=0.5, anchor="w")
         self.placeholder.bind("<Button-1>", lambda _: self.entry.focus_set())
         self.question.trace_add("write", self.update_placeholder)
-        scopes = tk.Frame(self.body, bg=BG)
+        scopes = self.scopes = tk.Frame(self.body, bg=BG)
         scopes.pack(fill="x", pady=(0, 6))
         self.scope_buttons = {}
         for scope in (("All", "Documents", "Code") if demo else ("All", "Documents", "Code", "Chat")):
             button = self.button(scopes, "Everything" if scope == "All" else scope, lambda s=scope: self.select_scope(s), muted=True)
-            button.pack(side="left", padx=(0, 4))
+            button.pack(side="left", padx=(12 if scope == "Chat" else 0, 4))
             self.scope_buttons[scope] = button
         if not demo:
             self.button(scopes, "Folders", self.manage_library, muted=True).pack(side="left", padx=(8, 0))
@@ -252,12 +261,13 @@ class LoftPreview:
         self.status.pack(fill="x", pady=(0, 4))
         self.results = tk.Frame(self.body, bg=BG)
         self.results.pack(fill="x")
-        footer = tk.Frame(self.body, bg=BG)
+        footer = self.footer = tk.Frame(self.body, bg=BG)
         footer.pack(fill="x", pady=(8, 0))
         self.library_label = tk.Label(footer, text="Sample library · 5 files · Search only" if demo else f"Your library · {self.engine.count()} files · On device",
                  bg=BG, fg=MUTED, font=("Segoe UI", 9))
         self.library_label.pack(side="left")
-        tk.Label(footer, text="drag title to move", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="right")
+        self.drag_hint = tk.Label(footer, text="drag title to move", bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        self.drag_hint.pack(side="right")
         self.style_scopes()
         self.show_welcome()
         self.collapse()
@@ -266,18 +276,27 @@ class LoftPreview:
         self.refresh_theme()
         self.event_timer = self.root.after(50, self.poll_events) if not demo else None
 
-    def start_job(self, operation):
+    def on_escape(self, _event=None):
+        if self.busy and not self.demo:
+            self.cancel_work.set()
+            self.note_phase("Stopping…")
+            return
+        self.collapse()
+
+    def start_job(self, operation, kind=None):
         if self.busy:
-            self.phase_text = "An operation is running. Use Stop, then try again."
-            self.status.configure(text=self.phase_text, fg=MUTED)
+            self.note_phase("An operation is running. Use Stop, then try again.")
             return False
         self.busy = True
+        self.job_kind = kind
+        self._status_error = False
         self.busy_started = time.perf_counter()
         self._shown_second = None
         self._shown_phase = None
         self.cancel_work = threading.Event()
         self.entry.configure(state="disabled")
         self.root.after_idle(self.fit_content)
+        captured = kind
         def emit(kind, value):
             self.events.put((kind, value))
         def work():
@@ -285,19 +304,45 @@ class LoftPreview:
                 result = operation(self.cancel_work, emit)
                 emit("done", result)
             except Exception as exc:
-                emit("error", "Stopped. Your saved index is unchanged." if self.cancel_work.is_set() else str(exc))
+                emit("error", self._worker_error(exc, captured))
             finally:
-                emit("idle", None)
+                emit("idle", {"cancelled": self.cancel_work.is_set()})
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
         return True
+
+    def _worker_error(self, exc, kind):
+        if self.cancel_work.is_set():
+            if kind == "index":
+                return "Stopped. Your saved index is unchanged."
+            return "Stopped."
+        text = str(exc).strip() or exc.__class__.__name__
+        return text
+
+    def show_stop(self):
+        if self.stop_button is None or not self.stop_button.winfo_exists():
+            self.stop_button = self.button(self.footer, "Stop", lambda: self.cancel_work.set())
+            self.stop_button.configure(bg=ACCENT, fg=BG, activebackground=ACCENT, activeforeground=BG)
+            self.stop_button.pack(side="right", padx=(0, 6), before=self.drag_hint)
+        if self.compact_stop is not None and not self.compact_stop.winfo_ismapped():
+            self.compact_stop.pack(side="left", before=self.compact_close)
+
+    def hide_stop(self):
+        if self.stop_button is not None and self.stop_button.winfo_exists():
+            self.stop_button.destroy()
+        self.stop_button = None
+        if self.compact_stop is not None and self.compact_stop.winfo_ismapped():
+            self.compact_stop.pack_forget()
+
+    def restore_compact(self):
+        self.compact_title.configure(text="loft    Ask your files    Ctrl+K")
 
     def note_phase(self, text):
         self.phase_text = text
         if self.busy:
             self.paint_activity(force=True)
         else:
-            self.status.configure(text=text, fg=MUTED)
+            self.status.configure(text=text, fg=ERROR if self._status_error else MUTED)
 
     def paint_activity(self, force=False):
         if not self.busy or self.busy_started is None or not self.phase_text:
@@ -308,10 +353,40 @@ class LoftPreview:
         self._shown_second = second
         self._shown_phase = self.phase_text
         self.status.configure(text=f"{self.phase_text}  {second}s", fg=ACCENT)
+        short = self.phase_text if len(self.phase_text) <= 42 else self.phase_text[:41] + "…"
+        self.compact_title.configure(text=f"loft    {short}    {second}s")
+
+    def show_note(self, message, color=None):
+        tk.Label(self.results, text=message, bg=BG, fg=color or TEXT, wraplength=490,
+                 justify="left", anchor="w", font=("Segoe UI", 11)).pack(anchor="w", fill="x", pady=(4, 6))
 
     def poll_events(self):
         if self.closed:
             return
+        try:
+            self.drain_events()
+        except Exception:
+            traceback.print_exc()
+            if self.worker is None or not self.worker.is_alive():
+                self.busy = False
+                self.job_kind = None
+                self.hide_stop()
+                try:
+                    self.entry.configure(state="normal")
+                except tk.TclError:
+                    pass
+            try:
+                self.status.configure(text="Something went wrong updating the window. You can try again.", fg=ERROR)
+            except tk.TclError:
+                pass
+        finally:
+            if not self.closed:
+                try:
+                    self.event_timer = self.root.after(50, self.poll_events)
+                except tk.TclError:
+                    pass
+
+    def drain_events(self):
         changed = False
         for _ in range(100):
             try:
@@ -319,35 +394,47 @@ class LoftPreview:
             except queue.Empty:
                 break
             if kind == "status":
+                self._status_error = False
                 self.note_phase(value)
                 if self.job_kind == "index":
                     self.set_library_status(value, ACCENT)
+                if self.awaiting_empty_note:
+                    self.show_note(value)
+                    self.awaiting_empty_note = False
                 changed = True
             elif kind == "chat":
                 self.clear_results()
+                self.awaiting_empty_note = False
+                tk.Label(self.results, text="Chat · not based on your files", bg=BG, fg=ACCENT,
+                         font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
                 tk.Label(self.results, text=value, bg=BG, fg=TEXT, wraplength=480,
                          justify="left", font=("Segoe UI", 11)).pack(anchor="w", pady=(4, 10))
+                self.root.lift()
                 changed = True
             elif kind == "sources":
-                self.last_hits = value
+                self.last_hits = value or []
                 self.clear_results()
                 if value:
+                    self.awaiting_empty_note = False
                     self.present_streaming()
                     self.present_sources(value)
                     actions = tk.Frame(self.results, bg=BG)
                     actions.pack(fill="x", pady=(6, 0))
                     self.button(actions, "Read full answer", self.show_answer, muted=True).pack(side="left")
-                    self.stop_button = self.button(actions, "Stop", lambda: self.cancel_work.set(), muted=True)
-                    self.stop_button.pack(side="right")
+                else:
+                    self.awaiting_empty_note = True
+                self.root.lift()
                 changed = True
             elif kind == "token":
                 self.answer_buffer += value
                 preview = self.answer_buffer[:450]
                 if self.answer_text is not None and self.answer_text.winfo_exists():
-                    self.answer_text.configure(text=preview + ("…" if len(self.answer_buffer) > 450 else ""))
-                if self.answer_window and self.answer_window.winfo_exists():
+                    shown = preview + ("…" if len(self.answer_buffer) > 450 else "")
+                    self.answer_text.configure(text=shown)
+                if self.answer_window and self.answer_window.winfo_exists() and getattr(self, "full_answer", None):
                     self.full_answer.configure(state="normal")
                     self.full_answer.insert("end", value)
+                    self.full_answer.see("end")
                     self.full_answer.configure(state="disabled")
                 changed = True
             elif kind == "warning":
@@ -356,42 +443,57 @@ class LoftPreview:
                 changed = True
             elif kind == "error":
                 self.phase_text = value
-                self.status.configure(text=value, fg=MUTED)
+                self._status_error = True
+                self.awaiting_empty_note = False
+                self.status.configure(text=value, fg=ERROR)
+                self.show_note(value, ERROR)
+                if self.answer_text is not None and self.answer_text.winfo_exists() and not self.answer_buffer:
+                    self.answer_text.configure(text="The answer stopped before it finished.")
                 if self.job_kind == "index":
-                    self.set_library_status("Indexing stopped: " + value, MUTED)
+                    self.set_library_status("Indexing stopped: " + value, ERROR)
                 changed = True
             elif kind == "done" and isinstance(value, dict) and "model_ready" in value:
                 self.phase_text = value["model_ready"] + " ready · choose it in Settings."
+                self._status_error = False
                 self.model_ready_pending = True
             elif kind == "done" and isinstance(value, dict) and "indexed" in value:
-                self.phase_text = f"Ready · {value['indexed']} updated, {value['unchanged']} unchanged, {value['deleted']} removed"
-                self.set_library_status(f"✓ Indexing complete · {value['indexed']} updated, {value['unchanged']} unchanged, {value['deleted']} removed", ACCENT)
+                summary = f"{value['indexed']} updated, {value['unchanged']} unchanged, {value['deleted']} removed"
+                if value.get("skipped"):
+                    summary += f", {value['skipped']} skipped"
+                if value.get("unreadable"):
+                    summary += f", {value['unreadable']} unreadable"
+                self.phase_text = "Ready · " + summary
+                self._status_error = False
+                self.set_library_status("Indexing complete · " + summary, ACCENT)
             elif kind == "idle":
+                cancelled = isinstance(value, dict) and bool(value.get("cancelled"))
                 self.busy = False
                 self.job_kind = None
-                if self.stop_button is not None and self.stop_button.winfo_exists():
-                    self.stop_button.destroy()
-                    self.stop_button = None
+                self.hide_stop()
                 self.finish_answer()
+                self.restore_compact()
                 if self.phase_text:
-                    self.status.configure(text=self.phase_text, fg=MUTED)
+                    self.status.configure(text=self.phase_text, fg=ERROR if self._status_error else MUTED)
                 self.entry.configure(state="normal")
                 changed = True
-                self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
+                if self.engine is not None:
+                    self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
                 if self.library_window and self.library_window.winfo_exists():
                     self.refresh_library_list()
-                if getattr(self, "model_ready_pending", False):
+                if self.pending_folders and not cancelled:
+                    self.start_next_pending_folder()
+                elif cancelled and self.pending_folders:
+                    waiting = len(self.pending_folders)
+                    noun = "folder" if waiting == 1 else "folders"
+                    self.set_library_status(f"Stopped. {waiting} {noun} still waiting — select one and choose Refresh.", MUTED)
+                    self.refresh_library_list()
+                if getattr(self, "model_ready_pending", False) and not self.busy:
                     self.model_ready_pending = False
                     self.show_settings()
                     self.status.configure(text=self.phase_text, fg=ACCENT)
-                pending_folder = getattr(self, "pending_folder", None)
-                if pending_folder:
-                    self.pending_folder = None
-                    self.index_selected_folder(pending_folder)
         self.paint_activity()
         if changed:
             self.fit_content()
-        self.event_timer = self.root.after(50, self.poll_events)
 
     def show_answer(self):
         if self.answer_window and self.answer_window.winfo_exists():
@@ -399,8 +501,9 @@ class LoftPreview:
             return
         self.answer_window = tk.Toplevel(self.root)
         self.answer_window.title("Loft · Local answer")
-        self.answer_window.geometry("700x500")
+        self.answer_window.configure(bg=BG)
         self.answer_window.attributes("-topmost", True)
+        self.place_dialog(self.answer_window, 700, 500)
         self.full_answer = scrolledtext.ScrolledText(self.answer_window, bg=BG, fg=TEXT,
             wrap="word", padx=24, pady=24, font=("Segoe UI", 12))
         self.full_answer.pack(fill="both", expand=True)
@@ -413,9 +516,9 @@ class LoftPreview:
             return
         window = self.library_window = tk.Toplevel(self.root)
         window.title("Loft · Your folders")
-        window.geometry("650x340")
         window.configure(bg=BG)
         window.attributes("-topmost", True)
+        self.place_dialog(window, 680, 380)
         tk.Label(window, text="Choose what Loft can search", bg=BG, fg=TEXT, font=("Segoe UI", 16), padx=20, pady=20).pack(anchor="w")
         tk.Label(window, text="Text, Markdown and code · stored locally · refresh after file changes",
                  bg=BG, fg=MUTED, padx=20).pack(anchor="w")
@@ -441,55 +544,156 @@ class LoftPreview:
             self.library_status.configure(text=message, fg=color)
 
     def refresh_library_list(self):
+        if not (self.library_window and self.library_window.winfo_exists()):
+            return
         self.folder_list.delete(0, "end")
+        self.folder_rows = []
+        seen = set()
         for folder in self.engine.roots():
-            self.folder_list.insert("end", folder)
+            count = self.engine.root_count(folder)
+            noun = "file" if count == 1 else "files"
+            self.folder_list.insert("end", f"{folder}    ·    {count} {noun}")
+            self.folder_rows.append(folder)
+            seen.add(folder)
+        for folder in self.pending_folders:
+            if folder in seen:
+                continue
+            self.folder_list.insert("end", f"{folder}    ·    waiting to index")
+            self.folder_rows.append(folder)
+
+    def selected_folder(self):
+        if not (self.library_window and self.library_window.winfo_exists()):
+            return None
+        selected = self.folder_list.curselection()
+        if not selected or selected[0] >= len(self.folder_rows):
+            return None
+        return self.folder_rows[selected[0]]
+
+    def select_folder_row(self, folder):
+        if folder in self.folder_rows and self.library_window and self.library_window.winfo_exists():
+            index = self.folder_rows.index(folder)
+            self.folder_list.selection_clear(0, "end")
+            self.folder_list.selection_set(index)
+            self.folder_list.see(index)
+
+    def folder_error(self, message):
+        self._status_error = True
+        self.phase_text = message
+        self.status.configure(text=message, fg=ERROR)
+        self.set_library_status(message, ERROR)
+
+    def pending_overlap(self, folder):
+        root = Path(folder)
+        for pending in self.pending_folders:
+            other = Path(pending)
+            if root != other and (root.is_relative_to(other) or other.is_relative_to(root)):
+                return True
+        return False
 
     def add_folder(self):
         folder = filedialog.askdirectory(parent=self.library_window, title="Choose a folder for Loft")
         if folder:
+            self.include_folder(folder)
+
+    def include_folder(self, folder):
+        try:
+            folder = self.engine.normalize_root(folder)
+        except (OSError, ValueError) as exc:
+            self.folder_error(str(exc))
+            return
+        if self.pending_overlap(folder):
+            self.folder_error("That folder overlaps a folder that is waiting to index.")
+            return
+        if folder in self.pending_folders:
+            self.set_library_status("That folder is already waiting to index.", MUTED)
+            return
+        if self.busy:
+            self.pending_folders.append(folder)
+            self.refresh_library_list()
+            self.note_phase("Folder added. It will index when the current task finishes.")
+            self.set_library_status("Folder added · waiting to index…", ACCENT)
+            return
+        self.index_now(folder)
+
+    def index_now(self, folder):
+        try:
+            folder = self.engine.add_root(folder)
+        except (OSError, ValueError) as exc:
+            self.folder_error(str(exc))
+            return
+        except sqlite3.OperationalError:
+            if folder not in self.pending_folders:
+                self.pending_folders.append(folder)
+            self.refresh_library_list()
+            self.folder_error("The library is busy. The folder will index when it is free.")
+            return
+        self.refresh_library_list()
+        self.select_folder_row(folder)
+        self.start_index(folder)
+
+    def start_index(self, folder):
+        if self.start_job(lambda cancel, emit, folder=folder: self.engine.index_folder(folder, cancel, emit), kind="index"):
+            self.show_stop()
+            self.note_phase("Loading the search model…")
+            self.set_library_status("Indexing… loading the search model", ACCENT)
+            return
+        if folder not in self.pending_folders:
+            self.pending_folders.insert(0, folder)
+        self.refresh_library_list()
+
+    def start_next_pending_folder(self):
+        while self.pending_folders:
+            folder = self.pending_folders.pop(0)
             try:
                 folder = self.engine.add_root(folder)
             except (OSError, ValueError) as exc:
-                self.status.configure(text=str(exc), fg=MUTED)
-                self.set_library_status(str(exc), MUTED)
+                self.folder_error(str(exc))
+                continue
+            except sqlite3.OperationalError:
+                self.pending_folders.insert(0, folder)
+                self.refresh_library_list()
+                self.folder_error("The library is busy. Select the folder and refresh to try again.")
                 return
             self.refresh_library_list()
-            folders = self.engine.roots()
-            self.folder_list.selection_set(folders.index(folder))
-            self.folder_list.see(folders.index(folder))
-            if self.busy:
-                self.pending_folder = folder
-                self.cancel_work.set()
-                self.note_phase("Folder added. Finishing current task before indexing…")
-                self.set_library_status("Folder added · waiting to index…", ACCENT)
-            else:
-                self.index_selected_folder(folder)
-
-    def index_selected_folder(self, folder):
-        self.job_kind = "index"
-        if self.start_job(lambda cancel, emit: self.engine.index_folder(folder, cancel, emit)):
-            self.note_phase("Loading the search model…")
-            self.set_library_status("Indexing… loading the search model", ACCENT)
+            self.select_folder_row(folder)
+            self.start_index(folder)
+            return
+        self.refresh_library_list()
 
     def refresh_folder(self):
-        selected = self.folder_list.curselection()
-        if selected and not self.busy:
-            folder = self.folder_list.get(selected[0])
-            self.job_kind = "index"
-            if self.start_job(lambda cancel, emit: self.engine.index_folder(folder, cancel, emit)):
-                self.note_phase("Loading the search model…")
-                self.set_library_status("Indexing… loading the search model", ACCENT)
+        folder = self.selected_folder()
+        if folder is None:
+            self.set_library_status("Select a folder, then refresh it.", MUTED)
+            return
+        if self.busy:
+            self.set_library_status("An operation is running. Use Stop, then refresh.", MUTED)
+            return
+        if folder in self.pending_folders:
+            self.pending_folders.remove(folder)
+        self.index_now(folder)
 
     def remove_folder(self):
-        selected = self.folder_list.curselection()
-        if selected and not self.busy:
-            self.engine.remove(self.folder_list.get(selected[0]))
+        folder = self.selected_folder()
+        if folder is None:
+            self.set_library_status("Select a folder first.", MUTED)
+            return
+        if self.busy:
+            self.set_library_status("An operation is running. Use Stop, then remove the folder.", MUTED)
+            return
+        if folder in self.pending_folders and folder not in self.engine.roots():
+            self.pending_folders.remove(folder)
             self.refresh_library_list()
-            self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
-            self.clear_results()
-            self.status.configure(text="Folder removed from Loft. Original files are unchanged.")
-            self.fit_content()
+            self.set_library_status("Removed the folder that was waiting to index.", MUTED)
+            return
+        self.engine.remove(folder)
+        if folder in self.pending_folders:
+            self.pending_folders.remove(folder)
+        self.refresh_library_list()
+        self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
+        self.clear_results()
+        self._status_error = False
+        self.status.configure(text="Folder removed from Loft. Original files are unchanged.", fg=MUTED)
+        self.fit_content()
 
     def update_placeholder(self, *_):
         if self.question.get():
@@ -581,6 +785,20 @@ class LoftPreview:
         elif on_click:
             on_click()
 
+    def place_dialog(self, window, width, height):
+        self.root.update_idletasks()
+        x = self.root.winfo_x()
+        y = self.root.winfo_y() + max(self.root.winfo_height(), 48) + 8
+        left, top, right, bottom = virtual_bounds(monitors())
+        width = min(width, max(280, right - left - 40))
+        height = min(height, max(180, bottom - top - 40))
+        if y + height > bottom:
+            y = max(top + 8, bottom - height - 8)
+        if x + width > right:
+            x = max(left + 8, right - width - 8)
+        window.geometry(f"{int(width)}x{int(height)}+{int(max(left, x))}+{int(max(top, y))}")
+        window.bind("<Escape>", lambda _event: window.destroy())
+
     def place_window(self, x, y, remember=True):
         screens = monitors()
         left, top, right, bottom = virtual_bounds(screens)
@@ -658,12 +876,32 @@ class LoftPreview:
     def present_model_settings(self):
         if self.demo:
             return
+        models_api = getattr(self.engine, "models", None)
+        if models_api is None:
+            return
         tk.Label(self.results, text="ANSWERS & SUMMARIES", bg=BG, fg=ACCENT,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(2, 4))
-        models = self.engine.models.answer_models()
-        selected = self.engine.models.selected_answer() if models else None
+        if not getattr(models_api, "manifest", None):
+            tk.Label(self.results, text="No local models yet. Run setup_runtime.py, then choose an answer model here.",
+                     bg=BG, fg=MUTED, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
+        else:
+            embed = models_api.embedding_record() if hasattr(models_api, "embedding_record") else None
+            if embed:
+                ready = models_api.model_path(embed["file"]).is_file()
+                detail = "ready" if ready else "missing — run setup_runtime.py"
+                tk.Label(self.results, text=f"File search embeddings · {embed['file']} · {detail}",
+                         bg=BG, fg=ACCENT if ready else ERROR, wraplength=480, justify="left",
+                         font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
+            else:
+                tk.Label(self.results, text="File search embeddings are missing. Run setup_runtime.py before indexing.",
+                         bg=BG, fg=ERROR, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
+        try:
+            models = models_api.answer_models()
+            selected = models_api.selected_answer() if models else None
+        except (RuntimeError, KeyError, ValueError, OSError):
+            models, selected = [], None
         installed = {model["file"]: model for model in models}
-        for candidate in self.engine.models.CATALOG:
+        for candidate in models_api.CATALOG:
             title, description, info = candidate
             filename = info[2]
             row = tk.Frame(self.results, bg=PANEL)
@@ -675,7 +913,7 @@ class LoftPreview:
                 if not (selected and selected["file"] == filename):
                     self.button(row, "Use", lambda f=filename: self.select_answer_model(f)).pack(side="right", padx=5)
             else:
-                exists = (ROOT / "models" / filename).exists()
+                exists = models_api.model_path(filename).is_file()
                 if exists:
                     self.button(row, "Add local file",
                                 lambda c=candidate: self.add_existing_model(c)).pack(side="right", padx=5)
@@ -683,7 +921,7 @@ class LoftPreview:
                     self.button(row, "Download",
                                 lambda c=candidate: self.download_model(c)).pack(side="right", padx=5)
         for model in models:
-            if model["file"] in {candidate[2][2] for candidate in self.engine.models.CATALOG}:
+            if model["file"] in {candidate[2][2] for candidate in models_api.CATALOG}:
                 continue
             row = tk.Frame(self.results, bg=PANEL)
             row.pack(fill="x", pady=2)
@@ -701,25 +939,51 @@ class LoftPreview:
         self.show_settings()
 
     def download_model(self, candidate):
-        if self.start_job(lambda cancel, emit: self.engine.models.download_answer(candidate, cancel, emit)):
-            self.stop_button = self.button(self.results, "Cancel download", lambda: self.cancel_work.set())
-            self.stop_button.pack(anchor="w")
+        if self.busy:
+            self.note_phase("An operation is running. Use Stop, then try again.")
+            return
+        models = getattr(self.engine, "models", None)
+        if models is not None and not getattr(models, "manifest", None):
+            self._status_error = True
+            self.phase_text = "Local models are not installed. Run setup_runtime.py first."
+            self.status.configure(text=self.phase_text, fg=ERROR)
+            return
+        if self.start_job(lambda cancel, emit: self.engine.models.download_answer(candidate, cancel, emit), kind="model"):
+            self.show_stop()
 
     def add_existing_model(self, candidate):
-        filename = ROOT / "models" / candidate[2][2]
-        self.start_job(lambda cancel, emit: self.engine.models.import_answer(filename, cancel, emit))
+        if self.busy:
+            self.note_phase("An operation is running. Use Stop, then try again.")
+            return
+        filename = self.engine.models.model_path(candidate[2][2])
+        if self.start_job(lambda cancel, emit: self.engine.models.import_answer(filename, cancel, emit), kind="model"):
+            self.show_stop()
 
     def import_model(self):
         if self.busy:
+            self.note_phase("An operation is running. Use Stop, then try again.")
+            return
+        models = getattr(self.engine, "models", None)
+        if models is not None and not getattr(models, "manifest", None):
+            self._status_error = True
+            self.phase_text = "Local models are not installed. Run setup_runtime.py first."
+            self.status.configure(text=self.phase_text, fg=ERROR)
             return
         filename = filedialog.askopenfilename(parent=self.root, title="Choose an answer model", filetypes=[("GGUF models", "*.gguf")])
-        if filename:
-            self.start_job(lambda cancel, emit: self.engine.models.import_answer(filename, cancel, emit))
+        if filename and self.start_job(lambda cancel, emit: self.engine.models.import_answer(filename, cancel, emit), kind="model"):
+            self.show_stop()
 
     def select_answer_model(self, filename):
         if self.busy:
+            self.note_phase("An operation is running. Use Stop, then try again.")
             return
-        self.engine.models.select_answer(filename)
+        try:
+            self.engine.models.select_answer(filename)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._status_error = True
+            self.phase_text = str(exc)
+            self.status.configure(text=str(exc), fg=ERROR)
+            return
         self.show_settings()
         self.status.configure(text="Saved · this model will answer your next question.", fg=ACCENT)
 
@@ -799,7 +1063,7 @@ class LoftPreview:
         # after its last packed child is removed, leaving an oversized void.
         self.answer_card = None
         self.answer_text = None
-        self.stop_button = None
+        self.answer_buffer = ""
         previous = self.results
         self.results = tk.Frame(self.body, bg=BG, height=1)
         self.results.pack(fill="x", before=previous)
@@ -818,9 +1082,10 @@ class LoftPreview:
         tk.Label(self.answer_card, text="Local answer", bg=HOVER, fg=ACCENT, anchor="w",
                  font=("Segoe UI", 9)).pack(anchor="w")
         self.answer_buffer = ""
-        self.answer_text = tk.Label(self.answer_card, text="", bg=HOVER, fg=TEXT, wraplength=460,
-                                     justify="left", anchor="w", font=("Segoe UI", 11))
+        self.answer_text = tk.Label(self.answer_card, text="Writing an answer…", bg=HOVER, fg=TEXT, wraplength=460,
+                                     justify="left", anchor="w", font=("Segoe UI", 11), cursor="hand2")
         self.answer_text.pack(anchor="w", fill="x", pady=(4, 0))
+        self.answer_text.bind("<Button-1>", lambda _event: self.show_answer())
 
     def finish_answer(self):
         card = self.answer_card
@@ -891,9 +1156,13 @@ class LoftPreview:
                     box.tag_add("kw", f"{line_no}.{match.start()}", f"{line_no}.{match.end()}")
 
     def copy_code(self, code, button):
-        self.root.clipboard_clear()
-        self.root.clipboard_append(code)
-        self.root.update_idletasks()
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            self.root.update_idletasks()
+        except tk.TclError:
+            self.status.configure(text="Could not copy to the clipboard.", fg=ERROR)
+            return
         button.configure(text="Copied")
         self.root.after(1200, lambda: button.configure(text="Copy") if button.winfo_exists() else None)
 
@@ -913,6 +1182,10 @@ class LoftPreview:
             excerpt = hit["text"] if len(hit["text"]) <= 160 else hit["text"][:157] + "…"
             tk.Label(self.sources_detail, text=f"[{hit['citation']}]  {excerpt}", bg=BG, fg=MUTED,
                      wraplength=470, justify="left", anchor="w", font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        if not self.demo:
+            self.sources_open = True
+            self.sources_detail.pack(fill="x", pady=(2, 0))
+            self.sources_toggle.configure(text=f"Sources · {len(hits)}  ▴")
 
     def toggle_sources(self):
         self.sources_open = not self.sources_open
@@ -928,7 +1201,8 @@ class LoftPreview:
     def show_welcome(self):
         self.clear_results()
         if not self.demo:
-            self.status.configure(text="Your files, ready when you are." if self.engine.count() else "Start with a folder of your own.")
+            self._status_error = False
+            self.status.configure(text="Your files, ready when you are." if self.engine.count() else "Start with a folder of your own.", fg=MUTED)
             self.button(self.results, "Choose folders ↗", self.manage_library).pack(anchor="w", pady=8)
             return
         self.status.configure(text="A place to start")
@@ -945,27 +1219,44 @@ class LoftPreview:
         self.search()
 
     def select_scope(self, scope):
+        if scope == self.scope:
+            return
+        if self.busy and not self.demo:
+            self.note_phase("An operation is running. Use Stop, then change mode.")
+            return
         self.scope = scope
         self.style_scopes()
         self.placeholder.configure(text="Ask anything…" if scope == "Chat" else "Ask your files…")
+        # Chat loads a model. Don't send just because the tab was clicked.
+        if scope == "Chat":
+            self._status_error = False
+            self.note_phase("Chat doesn't use your files. Press Enter to send.")
+            return
         if self.question.get().strip():
             self.search()
 
     def search(self):
         if not self.demo:
+            if self.busy:
+                self.note_phase("An operation is running. Use Stop, then try again.")
+                return
             question = self.question.get().strip()
-            if not question or self.busy:
+            if not question:
+                self.show_welcome()
                 return
             if self.answer_window and self.answer_window.winfo_exists():
                 self.answer_window.destroy()
             self.clear_results()
-            self.stop_button = self.button(self.results, "Stop", lambda: self.cancel_work.set(), muted=True)
-            self.stop_button.pack(anchor="w")
             scope = self.scope
-            self.job_kind = "ask"
-            operation = (lambda cancel, emit: self.engine.chat_question(question, cancel, emit)) if scope == "Chat" else (lambda cancel, emit: self.engine.ask(question, scope, cancel, emit))
-            if self.start_job(operation):
-                self.note_phase("Loading the answer model…" if scope == "Chat" else "Loading the search model…")
+            if scope == "Chat":
+                operation = lambda cancel, emit: self.engine.chat_question(question, cancel, emit)
+                kind, phase = "chat", "Loading the answer model…"
+            else:
+                operation = lambda cancel, emit: self.engine.ask(question, scope, cancel, emit)
+                kind, phase = "ask", "Loading the search model…"
+            if self.start_job(operation, kind=kind):
+                self.show_stop()
+                self.note_phase(phase)
             return
         self.root.after_idle(self.fit_content)
         question = self.question.get().strip()
@@ -994,9 +1285,9 @@ class LoftPreview:
             self.source_window.destroy()
         window = self.source_window = tk.Toplevel(self.root)
         window.title(f"Loft · {Path(hit['path']).name} · {'sample' if self.demo else 'indexed'} passage")
-        window.geometry("650x360")
         window.configure(bg=BG)
         window.attributes("-topmost", True)
+        self.place_dialog(window, 680, 380)
         tk.Label(window, text=f"[{hit['citation']}]  {hit['path']}  ·  lines {hit['start']}–{hit['end']}",
                  bg=BG, fg=TEXT, font=("Segoe UI", 12), padx=16, pady=14).pack(anchor="w")
         tk.Label(window, text="Invented fixture · this is not an original file on your computer." if self.demo else hit["path"],
@@ -1015,12 +1306,15 @@ class LoftPreview:
         if not path.exists():
             self.status.configure(text="That source no longer exists. Refresh its folder.")
             return
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer.exe", "/select,", str(path)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(path)])
-        else:
-            subprocess.Popen(["xdg-open", str(path.parent)])
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer.exe", "/select,", str(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path.parent)])
+        except OSError as exc:
+            self.status.configure(text=f"Could not open the folder: {exc}", fg=ERROR)
 
     def close(self):
         self.closed = True
