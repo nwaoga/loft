@@ -8,7 +8,7 @@ import json
 from unittest.mock import patch
 
 from loft_bench import ROOT, FakeEmbedding
-from loft_engine import Engine, Cancelled, chunks, streamed_answer, LocalModels
+from loft_engine import Engine, Cancelled, chunks, streamed_answer, LocalModels, unsupported_terms, format_dropped
 
 
 class TestModels:
@@ -100,6 +100,51 @@ class EngineTests(unittest.TestCase):
             names = {Path(row[0]).name for row in db.execute("SELECT path FROM files")}
         self.assertEqual(names, {"keep.txt", "yes.md", "tokenizer.py"})
         self.assertEqual(self.engine.root_count(self.engine.roots()[0]), 3)
+    def test_index_names_why_files_were_left_out(self):
+        self.write("notes.md", "parking receipt")
+        self.write("token.json", "{}\n")
+        self.write("build/app.js", "bundle()\n")
+        self.write(".gitignore", "draft.md\n")
+        self.write("draft.md", "do not index\n")
+        self.write("private.md", "-----BEGIN PRIVATE KEY-----\n")
+        stats = self.index()
+        reasons = {item["name"]: item["reason"] for item in stats["dropped"]}
+        self.assertEqual(reasons["token.json"], "likely secret")
+        self.assertEqual(reasons["build"], "build folder")
+        self.assertEqual(reasons["draft.md"], "gitignore")
+        self.assertEqual(reasons["private.md"], "likely secret")
+        self.assertNotIn("notes.md", reasons)
+        self.assertGreaterEqual(stats["dropped_total"], 4)
+        self.assertIn("token.json (likely secret)", format_dropped(stats))
+        self.assertIn("build (build folder)", format_dropped(stats))
+    def test_unsupported_terms_ignore_words_in_the_passage(self):
+        gaps = unsupported_terms("Parking was paid. The registration is AB12.", ["Parking receipt paid eight pounds."])
+        lowered = [gap.lower() for gap in gaps]
+        self.assertIn("registration", lowered)
+        self.assertIn("ab12", lowered)
+        self.assertNotIn("paid", lowered)
+        self.assertNotIn("parking", lowered)
+        self.assertEqual(unsupported_terms("Paid 8 pounds.", ["Paid £8 pound."]), [])
+        self.assertEqual(unsupported_terms("The animation takes 240 ms.", ["The animation takes 240 ms."]), [])
+    def test_ask_flags_terms_missing_from_the_cited_passage(self):
+        self.write("notes.md", "The animation takes 240 ms.")
+        self.index()
+        def answer(endpoint, question, hits, cancel, emit):
+            text = "The registration number is AB12. [S1]"
+            emit("token", text)
+            return text
+        self.models.answer = answer
+        events = []
+        result = self.engine.ask("animation", "Documents", self.cancel, lambda kind, value: events.append((kind, value)))
+        gaps = [gap.lower() for gap in next(value for kind, value in events if kind == "support")]
+        self.assertIn("registration", gaps)
+        self.assertIn("ab12", gaps)
+        self.assertNotIn("animation", gaps)
+        self.assertEqual(result["unsupported"], next(value for kind, value in events if kind == "support"))
+        self.models.answer = lambda endpoint, question, hits, cancel, emit: "The animation takes 240 ms. [S1]"
+        kinds = []
+        self.engine.ask("animation", "Documents", self.cancel, lambda kind, value: kinds.append(kind))
+        self.assertNotIn("support", kinds)
     def test_cancel_rolls_back_and_model_change_rejected(self):
         self.write("first.md", "old content")
         self.index()

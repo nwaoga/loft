@@ -149,6 +149,42 @@ class UIWorkerTests(unittest.TestCase):
         self.wait_idle()
         self.assertIn("3 skipped", self.app.library_status.cget("text"))
         self.assertIn("1 unreadable", self.app.status.cget("text"))
+    def test_index_names_a_sample_of_dropped_files(self):
+        self.app.manage_library()
+        def operation(cancel, emit):
+            return {"indexed": 1, "unchanged": 0, "deleted": 0, "skipped": 2,
+                    "dropped": [{"name": "token.json", "reason": "likely secret"},
+                                {"name": "build", "reason": "build folder"}],
+                    "dropped_total": 4}
+        self.assertTrue(self.app.start_job(operation, kind="index"))
+        self.wait_idle()
+        status = self.app.library_status.cget("text")
+        self.assertIn("token.json (likely secret)", status)
+        self.assertIn("build (build folder)", status)
+        self.assertIn("and 2 more", status)
+        notes = [child.cget("text") for child in self.app.results.winfo_children() if isinstance(child, tk.Label)]
+        self.assertTrue(any("token.json (likely secret)" in text for text in notes))
+    def test_unsupported_answer_terms_are_flagged(self):
+        def ask(question, scope, cancel, emit):
+            emit("sources", [dict(citation="S1", path="notes.md", start=1, end=1, text="The animation takes 240 ms.")])
+            emit("token", "The registration number is AB12. [S1]")
+            emit("support", ["registration", "AB12"])
+            emit("status", "Local answer · some words are not in the cited passage")
+            return {"answer": "The registration number is AB12. [S1]"}
+        self.app.engine.ask = ask
+        self.app.ask("animation")
+        self.wait_idle()
+        self.assertEqual(self.app.support_line(), "Not in the cited passage: registration, AB12")
+        caption = self.app.answer_card.winfo_children()[0].cget("text")
+        self.assertIn("not fully supported", caption)
+        box = self.app.answer_text
+        self.assertIsInstance(box, tk.Text)
+        self.assertTrue(box.tag_nextrange("gap", "1.0"))
+        self.app.show_answer()
+        self.root.update()
+        self.assertIn("not fully supported", self.app.answer_window.title())
+        self.assertTrue(self.app.full_answer.tag_nextrange("gap", "1.0"))
+        self.assertIn("registration", self.app.answer_gap_note.cget("text"))
 
     def test_refresh_without_selection_explains(self):
         self.app.manage_library()

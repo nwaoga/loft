@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import scrolledtext, filedialog
 
 from loft_bench import ROOT, FakeEmbedding, Index
+from loft_engine import format_dropped
 from loft_theme import windows_palette
 
 BG = "#101113"
@@ -184,6 +185,8 @@ class LoftPreview:
         self.sources_detail = None
         self.sources_toggle = None
         self.sources_open = False
+        self.support_gaps = []
+        self.support_note = None
         self.pending_folders = []
         self.folder_rows = []
         self._status_error = False
@@ -411,7 +414,12 @@ class LoftPreview:
                          justify="left", font=("Segoe UI", 11)).pack(anchor="w", pady=(4, 10))
                 self.root.lift()
                 changed = True
+            elif kind == "support":
+                self.support_gaps = list(value or [])
+                self.show_support_flag()
+                changed = True
             elif kind == "sources":
+                self.support_gaps = []
                 self.last_hits = value or []
                 self.clear_results()
                 if value:
@@ -464,7 +472,11 @@ class LoftPreview:
                     summary += f", {value['unreadable']} unreadable"
                 self.phase_text = "Ready · " + summary
                 self._status_error = False
-                self.set_library_status("Indexing complete · " + summary, ACCENT)
+                detail = format_dropped(value)
+                shown = summary if not detail else summary + "\n" + detail
+                self.set_library_status("Indexing complete · " + shown, ACCENT)
+                if detail:
+                    self.show_note(detail, MUTED)
             elif kind == "idle":
                 cancelled = isinstance(value, dict) and bool(value.get("cancelled"))
                 self.busy = False
@@ -508,7 +520,13 @@ class LoftPreview:
             wrap="word", padx=24, pady=24, font=("Segoe UI", 12))
         self.full_answer.pack(fill="both", expand=True)
         self.full_answer.insert("1.0", self.answer_buffer)
+        self.mark_unsupported(self.full_answer, self.answer_buffer)
         self.full_answer.configure(state="disabled")
+        if self.support_gaps:
+            self.answer_window.title("Loft · Local answer · not fully supported")
+            self.answer_gap_note = tk.Label(self.answer_window, text=self.support_line(), bg=BG, fg=ERROR,
+                            wraplength=640, justify="left", anchor="w", font=("Segoe UI", 10), padx=16, pady=8)
+            self.answer_gap_note.pack(anchor="w", before=self.full_answer)
 
     def manage_library(self):
         if self.library_window and self.library_window.winfo_exists():
@@ -525,7 +543,7 @@ class LoftPreview:
         self.folder_list = tk.Listbox(window, bg=PANEL, fg=TEXT, relief="flat", selectbackground=HOVER)
         self.folder_list.pack(fill="both", expand=True, padx=20, pady=15)
         self.library_status = tk.Label(window, text="Ready to add or refresh a folder", bg=BG, fg=MUTED,
-                                       anchor="w", padx=20, font=("Segoe UI", 10))
+                                       anchor="w", justify="left", wraplength=620, padx=20, font=("Segoe UI", 10))
         self.library_status.pack(fill="x", pady=(0, 8))
         actions = tk.Frame(window, bg=BG)
         actions.pack(fill="x", padx=20, pady=(0, 18))
@@ -1064,6 +1082,8 @@ class LoftPreview:
         self.answer_card = None
         self.answer_text = None
         self.answer_buffer = ""
+        self.support_gaps = []
+        self.support_note = None
         previous = self.results
         self.results = tk.Frame(self.body, bg=BG, height=1)
         self.results.pack(fill="x", before=previous)
@@ -1087,14 +1107,74 @@ class LoftPreview:
         self.answer_text.pack(anchor="w", fill="x", pady=(4, 0))
         self.answer_text.bind("<Button-1>", lambda _event: self.show_answer())
 
+    def support_line(self):
+        if not self.support_gaps:
+            return ""
+        return "Not in the cited passage: " + ", ".join(self.support_gaps)
+
+    def mark_unsupported(self, box, answer):
+        if not self.support_gaps or not answer:
+            return
+        box.tag_configure("gap", foreground=ERROR, underline=True)
+        wanted = {gap.lower() for gap in self.support_gaps}
+        for match in re.finditer(r"\w+", answer):
+            if match.group().lower() in wanted:
+                box.tag_add("gap", f"1.0+{match.start()}c", f"1.0+{match.end()}c")
+
+    def show_support_flag(self):
+        line = self.support_line()
+        if not line:
+            return
+        card = self.answer_card
+        if card is not None and card.winfo_exists():
+            children = card.winfo_children()
+            if children:
+                children[0].configure(text="Local answer · not fully supported", fg=ERROR)
+            current = self.answer_text
+            if isinstance(current, tk.Label) and current.winfo_exists():
+                current.destroy()
+                self.answer_text = self.mount_flagged_answer(card, self.answer_buffer)
+            if self.support_note is None or not self.support_note.winfo_exists():
+                self.support_note = tk.Label(card, text=line, bg=HOVER, fg=ERROR, wraplength=460,
+                                              justify="left", anchor="w", font=("Segoe UI", 9))
+                self.support_note.pack(anchor="w", fill="x", pady=(6, 0))
+            else:
+                self.support_note.configure(text=line)
+        window = self.answer_window
+        if window is not None and window.winfo_exists() and getattr(self, "full_answer", None):
+            window.title("Loft · Local answer · not fully supported")
+            self.full_answer.configure(state="normal")
+            self.mark_unsupported(self.full_answer, self.answer_buffer)
+            self.full_answer.configure(state="disabled")
+            if not getattr(self, "answer_gap_note", None) or not self.answer_gap_note.winfo_exists():
+                self.answer_gap_note = tk.Label(window, text=line, bg=BG, fg=ERROR, wraplength=640,
+                                                 justify="left", anchor="w", font=("Segoe UI", 10), padx=16, pady=8)
+                self.answer_gap_note.pack(anchor="w", before=self.full_answer)
+            else:
+                self.answer_gap_note.configure(text=line)
+
+    def mount_flagged_answer(self, parent, answer):
+        lines = max(1, answer.count("\n") + (len(answer) // 55) + 1)
+        box = tk.Text(parent, height=min(lines, 8), wrap="word", bg=HOVER, fg=TEXT, relief="flat",
+                      font=("Segoe UI", 11), highlightthickness=0, takefocus=0, cursor="hand2", padx=0, pady=0)
+        box.pack(anchor="w", fill="x", pady=(4, 0))
+        box.insert("1.0", answer)
+        self.mark_unsupported(box, answer)
+        box.configure(state="disabled")
+        box.bind("<Button-1>", lambda _event: self.show_answer())
+        return box
+
     def finish_answer(self):
         card = self.answer_card
-        if not self.answer_buffer or card is None or not card.winfo_exists() or "```" not in self.answer_buffer:
+        if not self.answer_buffer or card is None or not card.winfo_exists():
             return
-        for child in list(card.winfo_children())[1:]:
-            child.destroy()
-        self.mount_rich(card, self.answer_buffer)
-        self.answer_text = None
+        if "```" in self.answer_buffer:
+            for child in list(card.winfo_children())[1:]:
+                child.destroy()
+            self.mount_rich(card, self.answer_buffer)
+            self.answer_text = None
+            self.support_note = None
+        self.show_support_flag()
 
     def parts(self, text):
         if "```" not in text:

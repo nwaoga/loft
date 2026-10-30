@@ -29,6 +29,10 @@ SECRET_NAME = re.compile(
     re.I)
 SECRET_CONTENT = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|password|access[_-]?token|client[_-]?secret)\s*[:=]\s*[\"']?[A-Za-z0-9_+/=-]{16,}", re.I)
 STOP = set("a an the i my have has is are was were for to of in on does do where when which files involved taking today me find please can you how what".split())
+ANSWER_SKIP = STOP | set("say says said source sources passage passages line lines file document documents cited according based only using used answer not no yes this that its it be been from with your but if so by at into about than then just also very more most other such could would should may might will shall did done having without within across per via onto upon up down out off over under again here there their them they we he she who whom whose why an or and".split())
+BUILD_DIRS = {"bin", "obj", "dist", "build", "target"}
+DEPENDENCY_DIRS = {"node_modules", "vendor"}
+GENERATED_DIRS = {"__pycache__", "runtime", "models", "results", "data", "coverage"}
 
 
 class Cancelled(Exception):
@@ -298,6 +302,73 @@ class LocalModels:
         return answer
 
 
+def skip_dir_reason(name):
+    key = name.lower()
+    if key in DEPENDENCY_DIRS:
+        return "dependency folder"
+    if key in GENERATED_DIRS:
+        return "generated folder"
+    if key in BUILD_DIRS:
+        return "build folder"
+    return "skipped folder"
+
+
+def note_drop(drops, name, reason, limit=5):
+    if drops is None:
+        return
+    drops["total"] += 1
+    if any(item["name"] == name for item in drops["sample"]):
+        return
+    if len(drops["sample"]) < limit:
+        drops["sample"].append({"name": name, "reason": reason})
+
+
+def format_dropped(stats):
+    """Short completion line naming a few excluded files and why."""
+    sample = stats.get("dropped") or []
+    if not sample:
+        return ""
+    parts = [f"{item['name']} ({item['reason']})" for item in sample[:5]]
+    extra = int(stats.get("dropped_total") or 0) - len(parts)
+    text = "Not indexed: " + ", ".join(parts)
+    if extra > 0:
+        text += f", and {extra} more"
+    return text
+
+
+def unsupported_terms(answer, passages, limit=8):
+    """Content words in an answer that do not appear in the cited passage text.
+
+    This is a lexical check, not a proof that the sentence follows from the source.
+    A term is treated as supported when the passage contains that word, its plural,
+    or its singular. Function words and citation markers are ignored.
+    """
+    evidence = set()
+    for text in passages or []:
+        evidence.update(re.findall(r"\w+", text.lower()))
+    if not evidence:
+        return []
+    body = re.sub(r"\[S\d+\]", " ", answer or "")
+    body = re.sub(r"n't\b", " not", body, flags=re.I)
+    body = re.sub(r"'s\b", "", body, flags=re.I)
+    gaps, seen = [], set()
+    for token in re.findall(r"\w+", body):
+        key = token.lower()
+        if key in seen or key in ANSWER_SKIP:
+            continue
+        if not key.isdigit() and len(key) < 3:
+            continue
+        seen.add(key)
+        singular = key[:-1] if len(key) > 3 and key.endswith("s") else key
+        plural = key + "s"
+        if key in evidence or singular in evidence or plural in evidence:
+            continue
+        gaps.append(token)
+        if len(gaps) == limit:
+            break
+    return gaps
+
+
 def chunks(text, maximum=1000):
     """Bounded passages with original one-based line ranges (not AST parsing)."""
     lines = text.splitlines(keepends=True)
@@ -328,7 +399,7 @@ def read_ignore(path):
         raise RuntimeError(f"Could not read {path}: {exc}") from exc
 
 
-def iter_files(root, cancel):
+def iter_files(root, cancel, drops=None):
     ancestor_rules = []
     for parent in reversed(root.parents):
         ignore = parent / ".gitignore"
@@ -338,6 +409,11 @@ def iter_files(root, cancel):
     def walk_error(error):
         # An incomplete listing must not be treated as deleted files.
         raise RuntimeError(f"Could not list folder contents: {getattr(error, 'filename', None) or error}") from error
+    def rel(path):
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return path.name
     for directory, dirs, filenames in os.walk(root, followlinks=False, onerror=walk_error):
         check_cancel(cancel)
         directory = Path(directory)
@@ -353,12 +429,31 @@ def iter_files(root, cancel):
                 if result.include is not None:
                     decision = result.include
             return decision
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d.lower() not in SKIP_DIRS
-                         and not linked(directory/d) and not ignored(directory/d, True))
+        kept = []
+        for name in sorted(dirs):
+            path = directory / name
+            if name.startswith(".") or linked(path):
+                continue
+            if name.lower() in SKIP_DIRS:
+                note_drop(drops, rel(path), skip_dir_reason(name))
+                continue
+            if ignored(path, True):
+                note_drop(drops, rel(path), "gitignore")
+                continue
+            kept.append(name)
+        dirs[:] = kept
         for name in sorted(filenames):
             path = directory / name
-            if (name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE or
-                SECRET_NAME.search(name) or linked(path) or ignored(path)):
+            if name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE:
+                continue
+            if SECRET_NAME.search(name):
+                note_drop(drops, rel(path), "likely secret")
+                continue
+            if linked(path):
+                note_drop(drops, rel(path), "link")
+                continue
+            if ignored(path):
+                note_drop(drops, rel(path), "gitignore")
                 continue
             yield path
 
@@ -452,41 +547,56 @@ class Engine:
         root = Path(self.normalize_root(folder))
         started = time.perf_counter()
         stats = {"indexed": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "chunks": 0, "unreadable": 0}
+        drops = {"sample": [], "total": 0}
         emit("status", "Loading the search model…")
         with self.models.session("embedding", cancel, emit) as embedder, self.connect() as db:
             emit("status", "Reading your files…")
             self.validate_model(db, embedder)
             seen = set()
-            for path in iter_files(root, cancel):
+            for path in iter_files(root, cancel, drops):
                 check_cancel(cancel)
                 name = str(path)
+                try:
+                    label = path.relative_to(root).as_posix()
+                except ValueError:
+                    label = path.name
                 try:
                     before = path.stat()
                     if before.st_size > 1024*1024:
                         stats["skipped"] += 1
+                        note_drop(drops, label, "over 1 MB")
                         continue
                     raw = path.read_bytes()
                     after = path.stat()
                 except FileNotFoundError:
                     stats["skipped"] += 1
+                    note_drop(drops, label, "missing")
                     continue
                 except OSError:
                     # Keep a previous row. A failed read is not evidence the file was deleted.
                     stats["unreadable"] += 1
+                    note_drop(drops, label, "unreadable")
                     seen.add(name)
                     continue
                 if len(raw) > 1024*1024:
                     stats["skipped"] += 1
+                    note_drop(drops, label, "over 1 MB")
                     continue
                 if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
                     raise RuntimeError(f"File changed during indexing; refresh again: {path.name}")
-                if b"\0" in raw or SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
+                if b"\0" in raw:
                     stats["skipped"] += 1
+                    note_drop(drops, label, "binary")
+                    continue
+                if SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
+                    stats["skipped"] += 1
+                    note_drop(drops, label, "likely secret")
                     continue
                 try:
                     text = raw.decode("utf-8-sig")
                 except UnicodeDecodeError:
                     stats["skipped"] += 1
+                    note_drop(drops, label, "not UTF-8")
                     continue
                 seen.add(name)
                 digest = hashlib.sha256(raw).hexdigest()
@@ -509,6 +619,8 @@ class Engine:
                     stats["deleted"] += 1
             check_cancel(cancel)
             db.execute("INSERT OR IGNORE INTO roots VALUES (?)", (str(root),))
+        stats["dropped"] = drops["sample"]
+        stats["dropped_total"] = drops["total"]
         stats["seconds"] = time.perf_counter()-started
         return stats
 
@@ -634,8 +746,15 @@ class Engine:
         with self.models.session("answer", cancel, emit) as port:
             emit("status", "Writing an answer…")
             answer = self.models.answer(port, question, hits, cancel, emit)
-        emit("status", "Local answer · check the supporting sources")
-        return {"hits": hits, "answer": answer, "seconds": time.perf_counter()-started}
+        cited = set(re.findall(r"\[(S\d+)\]", answer))
+        passages = [hit["text"] for hit in hits if hit["citation"] in cited]
+        gaps = unsupported_terms(answer, passages) if passages else []
+        if gaps:
+            emit("support", gaps)
+            emit("status", "Local answer · some words are not in the cited passage")
+        else:
+            emit("status", "Local answer · check the supporting sources")
+        return {"hits": hits, "answer": answer, "seconds": time.perf_counter()-started, "unsupported": gaps}
 
     def chat_question(self, question, cancel, emit):
         started = time.perf_counter()
