@@ -21,11 +21,21 @@ from pathspec import GitIgnoreSpec
 from loft_bench import ROOT, Server, normalize, post
 
 DOCUMENTS = {".txt", ".md", ".markdown", ".rst", ".csv"}
+PDF = {".pdf"}
+TEXT_LIMIT = 1024 * 1024
+PDF_LIMIT = 20 * 1024 * 1024
 CODE = {".py", ".js", ".jsx", ".ts", ".tsx", ".cs", ".java", ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".swift", ".kt", ".rb", ".php", ".html", ".css", ".scss", ".sql", ".sh", ".ps1", ".yaml", ".yml", ".toml", ".json"}
 SKIP_DIRS = {"node_modules", "vendor", "bin", "obj", "dist", "build", "target", "__pycache__", "runtime", "models", "results", "data", "coverage"}
-SECRET_NAME = re.compile(r"(^\.env|credentials|secrets?|tokens?|password|id_rsa|id_ed25519|\.pem$|\.key$)", re.I)
+# Match secret-like name segments, not substrings such as "tokenizer.py".
+SECRET_NAME = re.compile(
+    r"(^\.env(?:$|[._-])|(?:^|[._-])(?:credentials|secrets?|tokens?|passwords?|id_rsa|id_ed25519)(?:[._-]|$)|(?:^|[._-])(?:pem|key)$)",
+    re.I)
 SECRET_CONTENT = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|password|access[_-]?token|client[_-]?secret)\s*[:=]\s*[\"']?[A-Za-z0-9_+/=-]{16,}", re.I)
 STOP = set("a an the i my have has is are was were for to of in on does do where when which files involved taking today me find please can you how what".split())
+ANSWER_SKIP = STOP | set("say says said source sources passage passages line lines file document documents cited according based only using used answer not no yes this that its it be been from with your but if so by at into about than then just also very more most other such could would should may might will shall did done having without within across per via onto upon up down out off over under again here there their them they we he she who whom whose why an or and".split())
+BUILD_DIRS = {"bin", "obj", "dist", "build", "target"}
+DEPENDENCY_DIRS = {"node_modules", "vendor"}
+GENERATED_DIRS = {"__pycache__", "runtime", "models", "results", "data", "coverage"}
 
 
 class Cancelled(Exception):
@@ -90,34 +100,54 @@ class LocalModels:
         self.manifest = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else None
         self.measurements = []
 
+    def model_path(self, filename):
+        path = Path(filename)
+        return path if path.is_absolute() else ROOT / "models" / path
+
     def answer_models(self):
         if not self.manifest:
             return []
         configured = self.manifest.get("answer_models", [self.manifest["models"][0]])
-        return [m for m in configured if (ROOT / "models" / m["file"]).is_file()]
+        return [m for m in configured if self.model_path(m["file"]).is_file()]
+
+    def embedding_record(self):
+        models = (self.manifest or {}).get("models") or []
+        return models[1] if len(models) > 1 else None
 
     def selected_answer(self):
         choices = self.answer_models()
+        if not choices:
+            raise RuntimeError("No answer model is installed. Download one in Settings or run setup_runtime.py.")
         selected = self.manifest.get("selected_answer")
-        return next((m for m in choices if m["file"] == selected), self.manifest["models"][0])
+        return next((m for m in choices if m["file"] == selected), choices[0])
+
+    def _write_manifest(self):
+        path = ROOT / "models" / "manifest.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(self.manifest, indent=2), encoding="utf-8")
+        temporary.replace(path)
 
     def select_answer(self, filename):
         if filename not in {model["file"] for model in self.answer_models()}:
             raise ValueError("That answer model is not downloaded")
         self.manifest["selected_answer"] = filename
-        path = ROOT / "models" / "manifest.json"
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(self.manifest, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        self._write_manifest()
 
     def register_answer(self, record):
         self.require()
         records = self.manifest.get("answer_models", [self.manifest["models"][0]])
         self.manifest["answer_models"] = [m for m in records if m["file"] != record["file"]] + [record]
-        # Installing a model does not activate it.
-        self.select_answer(self.selected_answer()["file"])
+        available = [m["file"] for m in self.answer_models()]
+        selected = self.manifest.get("selected_answer")
+        # Installing does not replace a model that is already usable.
+        if selected not in available:
+            previous = [filename for filename in available if filename != record["file"]]
+            self.manifest["selected_answer"] = previous[0] if previous else (record["file"] if record["file"] in available else None)
+        self._write_manifest()
 
     def download_answer(self, candidate, cancel, emit):
+        self.require()
         from setup_runtime import model
         title, _, info = candidate
         emit("status", "Downloading / verifying " + title)
@@ -128,33 +158,42 @@ class LocalModels:
         return {"model_ready": title}
 
     def import_answer(self, filename, cancel, emit):
+        self.require()
         path = Path(filename).resolve(strict=True)
+        emit("status", f"Checking {path.name}…")
+        digest = hashlib.sha256()
         with path.open("rb") as stream:
             if stream.read(4) != b"GGUF":
                 raise ValueError("Choose a GGUF model file")
             stream.seek(0)
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        check_cancel(cancel)
+            while block := stream.read(1024 * 1024):
+                check_cancel(cancel)
+                digest.update(block)
         stored_path = path.name if path.parent == (ROOT / "models").resolve() else str(path)
         self.register_answer({"file": stored_path, "title": path.stem, "repo": "Local file",
-                              "bytes": path.stat().st_size, "sha256": digest, "license": "Check model licence"})
+                              "bytes": path.stat().st_size, "sha256": digest.hexdigest(), "license": "Check model licence"})
         return {"model_ready": path.stem}
 
     def require(self):
-        if not self.manifest:
+        if not self.manifest or "runtime" not in self.manifest or not self.manifest.get("models"):
             raise RuntimeError("Local models are not installed. Run setup_runtime.py first.")
 
     @contextmanager
     def session(self, kind, cancel, emit=None):
         self.require()
-        record = self.manifest["models"][1] if kind == "embedding" else self.selected_answer()
+        if kind == "embedding":
+            record = self.embedding_record()
+            if not record:
+                raise RuntimeError("The embedding model is not installed. Run setup_runtime.py first.")
+        else:
+            record = self.selected_answer()
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         logs = ROOT / "data" / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         api_key = secrets.token_urlsafe(32)
-        server = Server(ROOT / self.manifest["runtime"]["server"], ROOT / "models" / record["file"],
+        server = Server(ROOT / self.manifest["runtime"]["server"], self.model_path(record["file"]),
                         port, max(1, min(4, (os.cpu_count() or 2)//2)), kind == "embedding", logs / f"{kind}.log",
                         api_key=api_key, context=4096 if kind == "answer" else 2048,
                         progress=(lambda percent, label: emit("status", f"{label} · {percent}%")) if emit else None)
@@ -208,7 +247,10 @@ class LocalModels:
                 raw = line[6:].strip()
                 if raw == b"[DONE]":
                     break
-                event = json.loads(raw)
+                try:
+                    event = json.loads(raw)
+                except ValueError:
+                    continue
                 if "error" in event:
                     raise RuntimeError(str(event["error"]))
                 for choice in event.get("choices", []):
@@ -232,71 +274,252 @@ class LocalModels:
         if not isinstance(selected, list) or not all(isinstance(s, str) and s in allowed for s in selected):
             raise RuntimeError("The model returned invalid source identifiers")
         if selected:
-            suffix = " " + " ".join(f"[{s}]" for s in dict.fromkeys(selected))
-            emit("token", suffix)
-            answer += suffix
+            fresh = [s for s in dict.fromkeys(selected) if f"[{s}]" not in answer]
+            if fresh:
+                suffix = " " + " ".join(f"[{s}]" for s in fresh)
+                emit("token", suffix)
+                answer += suffix
         else:
-            emit("warning", "Answer citations could not be validated. Check the source passages.")
+            emit("warning", "No source was cited for this answer. Read the passages before relying on it.")
         return answer
 
-    def chat(self, endpoint, message, cancel):
+    def chat(self, endpoint, message, cancel, history=None):
         port, api_key = endpoint
         check_cancel(cancel)
         instruction = ("You are Loft, a concise and friendly local assistant. Reply naturally to greetings and general questions. "
                        "This chat has no file evidence. Do not claim to have read, searched, or verified the user's files. "
                        "If asked about the user's personal facts, documents, travel, purchases, or code, say you need file search to answer and do not guess.")
+        messages = [{"role": "system", "content": instruction}]
+        for turn in (history or [])[-6:]:
+            role = turn.get("role")
+            content = str(turn.get("content") or "").strip()[:1000]
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message[:1000]})
         payload = {"model": "local", "stream": False, "temperature": 0.2, "max_tokens": 120,
-                   "messages": [
-                       {"role": "system", "content": instruction},
-                       {"role": "user", "content": message[:1000]}]}
+                   "messages": messages}
         with post(port, "/v1/chat/completions", payload, api_key) as response:
             result = json.load(response)
         check_cancel(cancel)
-        answer = result["choices"][0]["message"]["content"].strip()
+        try:
+            answer = result["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise RuntimeError("The local model returned an unexpected chat reply.") from exc
         if not answer:
             raise RuntimeError("The local model returned no text")
         return answer
 
 
-def chunks(text, maximum=1000):
-    """Bounded passages with original one-based line ranges (not AST parsing)."""
+def skip_dir_reason(name):
+    key = name.lower()
+    if key in DEPENDENCY_DIRS:
+        return "dependency folder"
+    if key in GENERATED_DIRS:
+        return "generated folder"
+    if key in BUILD_DIRS:
+        return "build folder"
+    return "skipped folder"
+
+
+def note_drop(drops, name, reason, limit=5):
+    if drops is None:
+        return
+    drops["total"] += 1
+    if any(item["name"] == name for item in drops["sample"]):
+        return
+    if len(drops["sample"]) < limit:
+        drops["sample"].append({"name": name, "reason": reason})
+
+
+def format_dropped(stats):
+    """Short completion line naming a few excluded files and why."""
+    sample = stats.get("dropped") or []
+    if not sample:
+        return ""
+    parts = [f"{item['name']} ({item['reason']})" for item in sample[:5]]
+    extra = int(stats.get("dropped_total") or 0) - len(parts)
+    text = "Not indexed: " + ", ".join(parts)
+    if extra > 0:
+        text += f", and {extra} more"
+    return text
+
+
+def unsupported_terms(answer, passages, limit=8):
+    """Content words in an answer that do not appear in the cited passage text.
+
+    This is a lexical check, not a proof that the sentence follows from the source.
+    A term is treated as supported when the passage contains that word, its plural,
+    or its singular. Function words and citation markers are ignored.
+    """
+    evidence = set()
+    for text in passages or []:
+        evidence.update(re.findall(r"\w+", text.lower()))
+    if not evidence:
+        return []
+    body = re.sub(r"\[S\d+\]", " ", answer or "")
+    body = re.sub(r"n't\b", " not", body, flags=re.I)
+    body = re.sub(r"'s\b", "", body, flags=re.I)
+    gaps, seen = [], set()
+    for token in re.findall(r"\w+", body):
+        key = token.lower()
+        if key in seen or key in ANSWER_SKIP:
+            continue
+        if not key.isdigit() and len(key) < 3:
+            continue
+        seen.add(key)
+        singular = key[:-1] if len(key) > 3 and key.endswith("s") else key
+        plural = key + "s"
+        if key in evidence or singular in evidence or plural in evidence:
+            continue
+        gaps.append(token)
+        if len(gaps) == limit:
+            break
+    return gaps
+
+
+def code_boundary(line):
+    """True for a low-indent definition. Not a full parser."""
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+    if indent > 4:
+        return False
+    return stripped.startswith((
+        "def ", "async def ", "class ", "function ", "export default function ",
+        "export function ", "export class ", "pub fn ", "fn ", "impl ",
+        "type ", "interface ", "struct ", "enum ",
+    ))
+
+
+def chunks(text, maximum=1000, overlap_lines=0, code=False):
+    """Bounded passages with original one-based line ranges.
+
+    Code files prefer to break before the next definition once a passage is
+    already substantial. overlap_lines repeats that many source lines at the
+    start of the next passage. This is line-oriented, not AST parsing.
+    """
     lines = text.splitlines(keepends=True)
-    content, start, end = "", 1, 1
+    if not lines:
+        if text.strip():
+            yield 1, 1, text
+        return
+    blocks, current, size = [], [], 0
+
+    def close():
+        nonlocal current, size
+        if any(piece.strip() for _, piece in current):
+            blocks.append(current)
+        current, size = [], 0
+
     for number, line in enumerate(lines, 1):
-        for offset in range(0, len(line), maximum):
-            piece = line[offset:offset+maximum]
-            if content and len(content) + len(piece) > maximum:
-                if content.strip():
-                    yield start, end, content
-                content = ""
-            if not content:
-                start = number
-            content += piece
-            end = number
-    if content.strip():
-        yield start, end, content
+        if code and current and code_boundary(line) and size >= min(200, maximum // 2):
+            close()
+        parts = [line[offset:offset + maximum] for offset in range(0, len(line), maximum)] or [""]
+        for piece in parts:
+            if current and size + len(piece) > maximum:
+                close()
+            current.append((number, piece))
+            size += len(piece)
+    close()
+    for index, block in enumerate(blocks):
+        if overlap_lines and index:
+            previous = blocks[index - 1]
+            seen_numbers = []
+            for lineno, _piece in previous:
+                if not seen_numbers or seen_numbers[-1] != lineno:
+                    seen_numbers.append(lineno)
+            keep = set(seen_numbers[-overlap_lines:])
+            block_lines = {lineno for lineno, _piece in block}
+            prefix = [(lineno, piece) for lineno, piece in previous if lineno in keep and lineno not in block_lines]
+            block = prefix + block
+        yield block[0][0], block[-1][0], "".join(piece for _, piece in block)
+
+
+def extract_pdf_text(raw):
+    """Local PDF text via pypdf. No network and no license key.
+
+    Page numbers are written into the extracted text because a PDF has no
+    source line numbers. Encrypted files are refused rather than guessed.
+    """
+    import logging
+    from io import BytesIO
+    from pypdf import PdfReader
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
+    try:
+        reader = PdfReader(BytesIO(raw))
+    except Exception as exc:
+        raise ValueError("unreadable PDF") from exc
+    if reader.is_encrypted:
+        raise ValueError("encrypted PDF")
+    pages = []
+    try:
+        page_list = list(enumerate(reader.pages, 1))
+    except Exception as exc:
+        raise ValueError("unreadable PDF") from exc
+    for number, page in page_list:
+        try:
+            page_text = page.extract_text() or ""
+        except Exception as exc:
+            raise ValueError("unreadable PDF") from exc
+        if page_text.strip():
+            pages.append(f"Page {number}\n{page_text.strip()}\n")
+    if not pages:
+        raise ValueError("no extractable text")
+    return "\n".join(pages)
+
+
+def read_indexed_text(path, raw):
+    """Return (text, drop_reason). drop_reason is None when the file can be indexed."""
+    if path.suffix.lower() in PDF:
+        try:
+            text = extract_pdf_text(raw)
+        except ValueError as exc:
+            return "", str(exc)
+        if SECRET_CONTENT.search(text):
+            return "", "likely secret"
+        return text, None
+    if b"\0" in raw:
+        return "", "binary"
+    if SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
+        return "", "likely secret"
+    try:
+        return raw.decode("utf-8-sig"), None
+    except UnicodeDecodeError:
+        return "", "not UTF-8"
 
 
 def linked(path):
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
-def iter_files(root, cancel):
+def read_ignore(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"Could not read {path}: {exc}") from exc
+
+
+def iter_files(root, cancel, drops=None):
     ancestor_rules = []
     for parent in reversed(root.parents):
         ignore = parent / ".gitignore"
         if ignore.is_file() and not linked(ignore):
-            ancestor_rules.append((parent, GitIgnoreSpec.from_lines(ignore.read_text(encoding="utf-8").splitlines())))
+            ancestor_rules.append((parent, GitIgnoreSpec.from_lines(read_ignore(ignore).splitlines())))
     rules_by_directory = {root.parent: ancestor_rules}
     def walk_error(error):
-        raise error  # Never reconcile deletions from an incomplete scan.
+        # An incomplete listing must not be treated as deleted files.
+        raise RuntimeError(f"Could not list folder contents: {getattr(error, 'filename', None) or error}") from error
+    def rel(path):
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return path.name
     for directory, dirs, filenames in os.walk(root, followlinks=False, onerror=walk_error):
         check_cancel(cancel)
         directory = Path(directory)
         inherited = list(rules_by_directory.get(directory.parent, []))
         ignore = directory / ".gitignore"
         if ignore.exists() and not linked(ignore):
-            inherited.append((directory, GitIgnoreSpec.from_lines(ignore.read_text(encoding="utf-8").splitlines())))
+            inherited.append((directory, GitIgnoreSpec.from_lines(read_ignore(ignore).splitlines())))
         rules_by_directory[directory] = inherited
         def ignored(path, is_dir=False):
             decision = False
@@ -305,12 +528,31 @@ def iter_files(root, cancel):
                 if result.include is not None:
                     decision = result.include
             return decision
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d.lower() not in SKIP_DIRS
-                         and not linked(directory/d) and not ignored(directory/d, True))
+        kept = []
+        for name in sorted(dirs):
+            path = directory / name
+            if name.startswith(".") or linked(path):
+                continue
+            if name.lower() in SKIP_DIRS:
+                note_drop(drops, rel(path), skip_dir_reason(name))
+                continue
+            if ignored(path, True):
+                note_drop(drops, rel(path), "gitignore")
+                continue
+            kept.append(name)
+        dirs[:] = kept
         for name in sorted(filenames):
             path = directory / name
-            if (name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE or
-                SECRET_NAME.search(name) or linked(path) or ignored(path)):
+            if name.startswith(".") or path.suffix.lower() not in DOCUMENTS | CODE | PDF:
+                continue
+            if SECRET_NAME.search(name):
+                note_drop(drops, rel(path), "likely secret")
+                continue
+            if linked(path):
+                note_drop(drops, rel(path), "link")
+                continue
+            if ignored(path):
+                note_drop(drops, rel(path), "gitignore")
                 continue
             yield path
 
@@ -320,15 +562,22 @@ class Engine:
         self.database = Path(database or ROOT / "data" / "library.sqlite3")
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self.models = models or LocalModels()
+        self._changed_roots = set()
+        self._changed_lock = threading.Lock()
         with self.connect() as db:
             db.executescript("""
               CREATE TABLE IF NOT EXISTS roots(path TEXT PRIMARY KEY);
               CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
-              CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, root TEXT, digest TEXT, kind TEXT);
+              CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, root TEXT, digest TEXT, kind TEXT, mtime INTEGER, size INTEGER);
               CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, path TEXT, start INTEGER, end INTEGER, text TEXT, vector TEXT);
               CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
               CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, tokenize='unicode61');
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+            if "mtime" not in columns:
+                db.execute("ALTER TABLE files ADD COLUMN mtime INTEGER")
+            if "size" not in columns:
+                db.execute("ALTER TABLE files ADD COLUMN size INTEGER")
 
     @contextmanager
     def connect(self):
@@ -344,7 +593,7 @@ class Engine:
         with self.connect() as db:
             return [r[0] for r in db.execute("SELECT path FROM roots ORDER BY path")]
 
-    def add_root(self, folder):
+    def normalize_root(self, folder):
         raw_root = Path(folder).absolute()
         if linked(raw_root):
             raise ValueError("Choose a real folder, not a symbolic link or junction")
@@ -354,13 +603,51 @@ class Engine:
         for existing in map(Path, self.roots()):
             if root != existing and (root.is_relative_to(existing) or existing.is_relative_to(root)):
                 raise ValueError("That folder overlaps an included folder")
-        with self.connect() as db:
-            db.execute("INSERT OR IGNORE INTO roots VALUES (?)", (str(root),))
         return str(root)
 
-    def count(self):
+    def add_root(self, folder):
+        root = self.normalize_root(folder)
         with self.connect() as db:
-            return db.execute("SELECT count(*) FROM files").fetchone()[0]
+            db.execute("INSERT OR IGNORE INTO roots VALUES (?)", (root,))
+        return root
+
+    def count(self, scope="All"):
+        with self.connect() as db:
+            return db.execute("SELECT count(*) FROM files WHERE (? = 'All' OR kind = ?)", (scope, scope)).fetchone()[0]
+
+    def root_count(self, root):
+        with self.connect() as db:
+            return db.execute("SELECT count(*) FROM files WHERE root=?", (root,)).fetchone()[0]
+
+    def note_root_changed(self, root):
+        with self._changed_lock:
+            self._changed_roots.add(str(root))
+
+    def clear_root_changed(self, root):
+        with self._changed_lock:
+            self._changed_roots.discard(str(root))
+
+    def root_is_stale(self, root):
+        """True when the folder changed since the last index.
+
+        Edits and deletions show up from stored mtimes. The folder watcher also
+        marks creates, edits, deletes, and moves. Refresh still does the reindex.
+        """
+        with self._changed_lock:
+            if str(root) in self._changed_roots:
+                return True
+        with self.connect() as db:
+            rows = db.execute("SELECT path, mtime, size FROM files WHERE root=?", (root,)).fetchall()
+        for path, mtime, size in rows:
+            if mtime is None or size is None:
+                continue
+            try:
+                current = Path(path).stat()
+            except OSError:
+                return True
+            if current.st_mtime_ns != mtime or current.st_size != size:
+                return True
+        return False
 
     def remove(self, root):
         with self.connect() as db:
@@ -393,51 +680,66 @@ class Engine:
         return vector
 
     def index_folder(self, folder, cancel, emit=lambda *_: None):
-        raw_root = Path(folder).absolute()
-        if linked(raw_root):
-            raise ValueError("Choose a real folder, not a symbolic link or junction")
-        root = raw_root.resolve(strict=True)
-        if not root.is_dir():
-            raise ValueError("Choose a folder")
-        for existing in map(Path, self.roots()):
-            if root != existing and (root.is_relative_to(existing) or existing.is_relative_to(root)):
-                raise ValueError("That folder overlaps an included folder")
+        root = Path(self.normalize_root(folder))
         started = time.perf_counter()
-        stats = {"indexed": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "chunks": 0}
+        stats = {"indexed": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "chunks": 0, "unreadable": 0}
+        drops = {"sample": [], "total": 0}
         emit("status", "Loading the search model…")
         with self.models.session("embedding", cancel, emit) as embedder, self.connect() as db:
             emit("status", "Reading your files…")
             self.validate_model(db, embedder)
             seen = set()
-            for path in iter_files(root, cancel):
+            for path in iter_files(root, cancel, drops):
                 check_cancel(cancel)
                 name = str(path)
-                before = path.stat()
-                if before.st_size > 1024*1024:
+                try:
+                    label = path.relative_to(root).as_posix()
+                except ValueError:
+                    label = path.name
+                try:
+                    before = path.stat()
+                    limit = PDF_LIMIT if path.suffix.lower() in PDF else TEXT_LIMIT
+                    if before.st_size > limit:
+                        stats["skipped"] += 1
+                        note_drop(drops, label, "over 20 MB" if path.suffix.lower() in PDF else "over 1 MB")
+                        continue
+                    raw = path.read_bytes()
+                    after = path.stat()
+                except FileNotFoundError:
                     stats["skipped"] += 1
+                    note_drop(drops, label, "missing")
                     continue
-                raw = path.read_bytes()
-                after = path.stat()
+                except OSError:
+                    # Keep a previous row. A failed read is not evidence the file was deleted.
+                    stats["unreadable"] += 1
+                    note_drop(drops, label, "unreadable")
+                    seen.add(name)
+                    continue
+                if len(raw) > limit:
+                    stats["skipped"] += 1
+                    note_drop(drops, label, "over 20 MB" if path.suffix.lower() in PDF else "over 1 MB")
+                    continue
                 if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
                     raise RuntimeError(f"File changed during indexing; refresh again: {path.name}")
-                if b"\0" in raw or SECRET_CONTENT.search(raw.decode("utf-8", errors="replace")):
+                text, reason = read_indexed_text(path, raw)
+                if reason:
                     stats["skipped"] += 1
-                    continue
-                try:
-                    text = raw.decode("utf-8-sig")
-                except UnicodeDecodeError:
-                    stats["skipped"] += 1
+                    note_drop(drops, label, reason)
                     continue
                 seen.add(name)
                 digest = hashlib.sha256(raw).hexdigest()
                 previous = db.execute("SELECT digest FROM files WHERE path=?", (name,)).fetchone()
                 if previous and previous[0] == digest:
                     stats["unchanged"] += 1
+                    db.execute("UPDATE files SET mtime=?, size=? WHERE path=?", (before.st_mtime_ns, before.st_size, name))
                     continue
                 emit("status", f"Indexing {path.name}…")
                 self.delete_file(db, name)
-                db.execute("INSERT INTO files VALUES (?,?,?,?)", (name, str(root), digest, "Documents" if path.suffix.lower() in DOCUMENTS else "Code"))
-                for start, end, passage in chunks(text):
+                kind = "Documents" if path.suffix.lower() in DOCUMENTS | PDF else "Code"
+                db.execute("INSERT INTO files(path, root, digest, kind, mtime, size) VALUES (?,?,?,?,?,?)",
+                           (name, str(root), digest, kind, before.st_mtime_ns, before.st_size))
+                code = path.suffix.lower() in CODE
+                for start, end, passage in chunks(text, code=code, overlap_lines=2 if code else 0):
                     vector = self.validate_vector(db, embedder.embed(passage))
                     cursor = db.execute("INSERT INTO chunks(path,start,end,text,vector) VALUES (?,?,?,?,?)", (name, start, end, passage, json.dumps(vector)))
                     db.execute("INSERT INTO words(rowid,text) VALUES (?,?)", (cursor.lastrowid, passage))
@@ -449,18 +751,43 @@ class Engine:
                     stats["deleted"] += 1
             check_cancel(cancel)
             db.execute("INSERT OR IGNORE INTO roots VALUES (?)", (str(root),))
+        stats["dropped"] = drops["sample"]
+        stats["dropped_total"] = drops["total"]
         stats["seconds"] = time.perf_counter()-started
+        self.clear_root_changed(str(root))
         return stats
 
     def retrieve(self, question, scope, cancel, emit):
-        terms = [t for t in re.findall(r"\w+", question.lower()) if t not in STOP][:32]
+        question = question.strip()[:1000]
+        terms = []
+        for term in re.findall(r"\w+", question.lower()):
+            if term in STOP:
+                continue
+            terms.append(term[:64])
+            if len(terms) == 32:
+                break
         if not terms:
             return []
+        match = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
         with self.connect() as db:
             rows = db.execute("SELECT c.id,c.path,c.start,c.end,c.text,c.vector,f.digest FROM chunks c JOIN files f ON f.path=c.path WHERE (?='All' OR f.kind=?)", (scope, scope)).fetchall()
             if not rows:
                 return []
-            lexical = db.execute("SELECT rowid FROM words WHERE words MATCH ? ORDER BY rank LIMIT 50", (' OR '.join('"'+t+'"' for t in terms),)).fetchall()
+            try:
+                # Scope before the rank limit. A global top-50 can hide every Documents hit.
+                lexical = db.execute("""
+                    SELECT words.rowid FROM words
+                    WHERE words MATCH ?
+                      AND words.rowid IN (
+                        SELECT c.id FROM chunks c
+                        JOIN files f ON f.path = c.path
+                        WHERE (? = 'All' OR f.kind = ?)
+                      )
+                    ORDER BY rank
+                    LIMIT 50
+                """, (match, scope, scope)).fetchall()
+            except sqlite3.OperationalError as exc:
+                raise RuntimeError("That search could not be run. Try simpler words.") from exc
         eligible = {r[0] for r in rows}
         lexical_ids = {r[0] for r in lexical if r[0] in eligible}
         # Do not turn generic semantic similarity into claimed evidence. This
@@ -472,15 +799,23 @@ class Engine:
             emit("status", "Searching your files…")
             self.validate_model(db, embedder)
             query = self.validate_vector(db, embedder.embed(question[:1000], query=True))
-        similarities = {r[0]: sum(a*b for a,b in zip(query, json.loads(r[5]))) for r in rows}
-        semantic = sorted(rows, key=lambda r: similarities[r[0]], reverse=True)[:30]
+        similarities = {}
+        for row in rows:
+            try:
+                vector = json.loads(row[5])
+            except (TypeError, ValueError):
+                continue
+            if len(vector) != len(query):
+                continue
+            similarities[row[0]] = sum(a*b for a, b in zip(query, vector))
+        semantic = sorted((row for row in rows if row[0] in similarities), key=lambda row: similarities[row[0]], reverse=True)[:30]
         scores = {}
         for ranking in ([r[0] for r in semantic], [r[0] for r in lexical if r[0] in eligible]):
             for rank, ident in enumerate(ranking, 1):
                 scores[ident] = scores.get(ident, 0) + 1/(60+rank)
         ranked = sorted((r for r in rows if r[0] in lexical_ids),
                         key=lambda r: scores.get(r[0], 0), reverse=True)
-        hits, checked = [], {}
+        hits, checked, warned = [], {}, False
         for row in ranked:
             check_cancel(cancel)
             path = Path(row[1])
@@ -492,7 +827,9 @@ class Engine:
                 except OSError:
                     checked[row[1]] = False
             if not checked[row[1]]:
-                emit("warning", "Some indexed files changed. Refresh your folders to include them.")
+                if not warned:
+                    emit("warning", "Some indexed files changed. Refresh your folders to include them.")
+                    warned = True
                 continue
             hits.append(dict(citation=f"S{len(hits)+1}", path=row[1], start=row[2], end=row[3], text=row[4], digest=row[6]))
             if len(hits) == 3:
@@ -501,7 +838,11 @@ class Engine:
 
     def ask(self, question, scope, cancel, emit):
         started = time.perf_counter()
-        greeting = re.sub(r"[^\w\s]", "", question.lower()).strip()
+        question = question.strip()[:1000]
+        if not question:
+            emit("status", "Type a question to search your files.")
+            return {"hits": [], "answer": None, "seconds": 0.0}
+        greeting = " ".join(re.sub(r"[^\w\s]", "", question.lower()).split())
         if greeting in {"hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening"}:
             emit("status", "Loading the answer model…")
             with self.models.session("answer", cancel, emit) as endpoint:
@@ -510,24 +851,53 @@ class Engine:
             emit("chat", answer)
             emit("status", "Local reply")
             return {"hits": [], "answer": answer, "seconds": time.perf_counter()-started}
-        hits = self.retrieve(question, scope, cancel, emit)
+        if self.count() == 0:
+            emit("sources", [])
+            emit("status", "No files are indexed yet. Add a folder and wait for indexing to finish.")
+            return {"hits": [], "answer": None, "seconds": time.perf_counter()-started}
+        warnings = []
+        def capture(kind, value):
+            if kind == "warning":
+                if value not in warnings:
+                    warnings.append(value)
+            else:
+                emit(kind, value)
+        hits = self.retrieve(question, scope, cancel, capture)
         emit("sources", hits)
+        for warning in warnings:
+            emit("warning", warning)
         if not hits:
-            emit("status", "I couldn't find that in your indexed folders. Try another term or add the relevant folder.")
+            if warnings:
+                status = "Those matches changed on disk. Refresh the folder, then ask again."
+            elif scope != "All" and self.count(scope) == 0:
+                status = f"No {scope} files are indexed. Try Everything, or add a folder with those files."
+            else:
+                status = "No keyword match in your indexed folders. Try a word that appears in the file. Similar wording alone is not searched yet."
+            emit("status", status)
             return {"hits": [], "answer": None, "seconds": time.perf_counter()-started}
         emit("status", "Loading the answer model…")
         with self.models.session("answer", cancel, emit) as port:
             emit("status", "Writing an answer…")
             answer = self.models.answer(port, question, hits, cancel, emit)
-        emit("status", "Local answer · check the supporting sources")
-        return {"hits": hits, "answer": answer, "seconds": time.perf_counter()-started}
+        cited = set(re.findall(r"\[(S\d+)\]", answer))
+        passages = [hit["text"] for hit in hits if hit["citation"] in cited]
+        gaps = unsupported_terms(answer, passages) if passages else []
+        if gaps:
+            emit("support", gaps)
+            emit("status", "Local answer · some words are not in the cited passage")
+        else:
+            emit("status", "Local answer · check the supporting sources")
+        return {"hits": hits, "answer": answer, "seconds": time.perf_counter()-started, "unsupported": gaps}
 
-    def chat_question(self, question, cancel, emit):
+    def chat_question(self, question, cancel, emit, history=None):
         started = time.perf_counter()
+        question = question.strip()[:1000]
+        if not question:
+            raise ValueError("Type a message to chat.")
         emit("status", "Loading the answer model…")
         with self.models.session("answer", cancel, emit) as endpoint:
             emit("status", "Writing a reply…")
-            answer = self.models.chat(endpoint, question, cancel)
+            answer = self.models.chat(endpoint, question, cancel, history)
         emit("chat", answer)
         emit("status", "Local chat · not based on your files")
         return {"hits": [], "answer": answer, "seconds": time.perf_counter()-started}

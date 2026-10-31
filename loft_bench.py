@@ -12,6 +12,7 @@ import socket
 import subprocess
 import threading
 import time
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 ROOT = Path(__file__).resolve().parent
@@ -25,7 +26,22 @@ def post(port, route, payload, api_key=None):
     request = Request(f"http://127.0.0.1:{port}{route}",
                       data=json.dumps(payload).encode(),
                       headers=headers)
-    return HTTP.open(request, timeout=180)
+    try:
+        return HTTP.open(request, timeout=180)
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(500).decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = ""
+        message = f"Local model request failed ({exc.code})"
+        if detail:
+            message += ": " + detail[:300]
+        raise RuntimeError(message) from exc
+    except URLError as exc:
+        raise RuntimeError(
+            "Could not reach the local model server (" + str(exc.reason) + "). Check data/logs and loopback access."
+        ) from exc
 
 
 class FakeEmbedding:
