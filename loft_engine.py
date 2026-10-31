@@ -2,6 +2,8 @@
 
 Each public operation owns its SQLite connection. Call from one background
 worker; UI progress is delivered through callbacks, never through Tk calls.
+Inference goes through the backend seam in loft_backend.py. Local llama.cpp
+stays the default. Citation checks stay in this module, after the backend returns.
 """
 from contextlib import contextmanager
 from datetime import date
@@ -558,12 +560,29 @@ def iter_files(root, cancel, drops=None):
 
 
 class Engine:
-    def __init__(self, database=None, models=None):
+    def __init__(self, database=None, models=None, backend=None):
+        """models is the settings library. backend performs embed, answer, and chat.
+
+        With neither argument, both are local llama.cpp. Passing only models
+        (the test double, or LocalModels) uses that object for both. Passing
+        both keeps GGUF settings on models and inference on backend.
+        """
         self.database = Path(database or ROOT / "data" / "library.sqlite3")
         self.database.parent.mkdir(parents=True, exist_ok=True)
-        self.models = models or LocalModels()
         self._changed_roots = set()
         self._changed_lock = threading.Lock()
+        if models is not None and backend is not None and backend is not models:
+            self.backend = backend
+            self.models = models
+        elif models is not None:
+            self.backend = models
+            self.models = models
+        elif backend is not None:
+            self.backend = backend
+            self.models = getattr(backend, "models", backend)
+        else:
+            self.models = LocalModels()
+            self.backend = self.models
         with self.connect() as db:
             db.executescript("""
               CREATE TABLE IF NOT EXISTS roots(path TEXT PRIMARY KEY);
@@ -685,7 +704,7 @@ class Engine:
         stats = {"indexed": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "chunks": 0, "unreadable": 0}
         drops = {"sample": [], "total": 0}
         emit("status", "Loading the search model…")
-        with self.models.session("embedding", cancel, emit) as embedder, self.connect() as db:
+        with self.backend.session("embedding", cancel, emit) as embedder, self.connect() as db:
             emit("status", "Reading your files…")
             self.validate_model(db, embedder)
             seen = set()
@@ -795,7 +814,7 @@ class Engine:
         if not lexical_ids:
             return []
         emit("status", "Loading the search model…")
-        with self.models.session("embedding", cancel, emit) as embedder, self.connect() as db:
+        with self.backend.session("embedding", cancel, emit) as embedder, self.connect() as db:
             emit("status", "Searching your files…")
             self.validate_model(db, embedder)
             query = self.validate_vector(db, embedder.embed(question[:1000], query=True))
@@ -845,9 +864,9 @@ class Engine:
         greeting = " ".join(re.sub(r"[^\w\s]", "", question.lower()).split())
         if greeting in {"hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening"}:
             emit("status", "Loading the answer model…")
-            with self.models.session("answer", cancel, emit) as endpoint:
+            with self.backend.session("answer", cancel, emit) as endpoint:
                 emit("status", "Writing a reply…")
-                answer = self.models.chat(endpoint, question, cancel)
+                answer = self.backend.chat(endpoint, question, cancel)
             emit("chat", answer)
             emit("status", "Local reply")
             return {"hits": [], "answer": answer, "seconds": time.perf_counter()-started}
@@ -876,9 +895,9 @@ class Engine:
             emit("status", status)
             return {"hits": [], "answer": None, "seconds": time.perf_counter()-started}
         emit("status", "Loading the answer model…")
-        with self.models.session("answer", cancel, emit) as port:
+        with self.backend.session("answer", cancel, emit) as port:
             emit("status", "Writing an answer…")
-            answer = self.models.answer(port, question, hits, cancel, emit)
+            answer = self.backend.answer(port, question, hits, cancel, emit)
         cited = set(re.findall(r"\[(S\d+)\]", answer))
         passages = [hit["text"] for hit in hits if hit["citation"] in cited]
         gaps = unsupported_terms(answer, passages) if passages else []
@@ -895,9 +914,9 @@ class Engine:
         if not question:
             raise ValueError("Type a message to chat.")
         emit("status", "Loading the answer model…")
-        with self.models.session("answer", cancel, emit) as endpoint:
+        with self.backend.session("answer", cancel, emit) as endpoint:
             emit("status", "Writing a reply…")
-            answer = self.models.chat(endpoint, question, cancel, history)
+            answer = self.backend.chat(endpoint, question, cancel, history)
         emit("chat", answer)
         emit("status", "Local chat · not based on your files")
         return {"hits": [], "answer": answer, "seconds": time.perf_counter()-started}
