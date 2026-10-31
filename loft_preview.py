@@ -53,6 +53,10 @@ def virtual_bounds(screens):
             max(s["right"] for s in screens), max(s["bottom"] for s in screens))
 
 
+def on_screen(x, y, screens):
+    return any(screen["left"] <= x < screen["right"] and screen["top"] <= y < screen["bottom"] for screen in screens)
+
+
 def window_handle(widget):
     import ctypes
     child = widget.winfo_id()
@@ -190,6 +194,10 @@ class LoftPreview:
         self.topmost = bool(self.prefs.get("topmost", True))
         if use_settings and "x" in self.prefs and "y" in self.prefs:
             self.origin = (int(self.prefs["x"]), int(self.prefs["y"]))
+            screens = monitors()
+            # A remembered point on an unplugged display would open off-screen.
+            if len(screens) == 1 or not on_screen(self.origin[0], self.origin[1], screens):
+                self.origin = None
         root.title("Loft — desktop preview")
         root.configure(bg=BG)
         root.overrideredirect(True)
@@ -725,6 +733,8 @@ class LoftPreview:
 
     def layout(self, width, height):
         screens = monitors()
+        if self.origin is not None and not on_screen(self.origin[0], self.origin[1], screens):
+            self.origin = None
         if self.origin is None:
             home = next(screen for screen in screens if screen["primary"])
             width = min(width, home["right"] - home["left"] - 20)
