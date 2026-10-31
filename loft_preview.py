@@ -167,11 +167,15 @@ class LoftPreview:
         self.events = queue.Queue()
         self.cancel_work = threading.Event()
         self.worker = None
+        self.watcher = None
         self.library_window = None
         self.answer_window = None
         if not demo:
             from loft_engine import Engine
+            from loft_watch import FolderWatcher
             self.engine = Engine()
+            self.watcher = FolderWatcher(self._watched_folder_changed)
+            self.sync_watcher()
         self.expanded = False
         self.animation_timer = None
         self.motion_ready = False
@@ -414,7 +418,10 @@ class LoftPreview:
                 kind, value = self.events.get_nowait()
             except queue.Empty:
                 break
-            if kind == "status":
+            if kind == "stale":
+                if not self.busy:
+                    self.refresh_library_list()
+            elif kind == "status":
                 self._status_error = False
                 self.note_phase(value)
                 if self.job_kind == "index":
@@ -510,6 +517,7 @@ class LoftPreview:
                 changed = True
                 if self.engine is not None:
                     self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
+                    self.sync_watcher()
                 if self.library_window and self.library_window.winfo_exists():
                     self.refresh_library_list()
                 self.set_library_topmost(False)
@@ -562,7 +570,7 @@ class LoftPreview:
         window.attributes("-topmost", indexing)
         self.place_dialog(window, 680, 380)
         tk.Label(window, text="Choose what Loft can search", bg=BG, fg=TEXT, font=("Segoe UI", 16), padx=20, pady=20).pack(anchor="w")
-        tk.Label(window, text="Text, Markdown, PDF and code · stored locally · refresh after file changes",
+        tk.Label(window, text="Text, Markdown, PDF and code · changes are marked · Refresh to reindex",
                  bg=BG, fg=MUTED, padx=20).pack(anchor="w")
         self.folder_list = tk.Listbox(window, bg=PANEL, fg=TEXT, relief="flat", selectbackground=HOVER)
         self.folder_list.pack(fill="both", expand=True, padx=20, pady=15)
@@ -685,6 +693,7 @@ class LoftPreview:
             return
         self.refresh_library_list()
         self.select_folder_row(folder)
+        self.sync_watcher()
         self.start_index(folder)
 
     def start_index(self, folder):
@@ -715,6 +724,7 @@ class LoftPreview:
                 return
             self.refresh_library_list()
             self.select_folder_row(folder)
+            self.sync_watcher()
             self.start_index(folder)
             return
         self.refresh_library_list()
@@ -750,6 +760,9 @@ class LoftPreview:
         if not self.confirm_remove(folder, count):
             return
         self.engine.remove(folder)
+        if getattr(self.engine, "clear_root_changed", None):
+            self.engine.clear_root_changed(folder)
+        self.sync_watcher()
         if folder in self.pending_folders:
             self.pending_folders.remove(folder)
         self.refresh_library_list()
@@ -1533,6 +1546,15 @@ class LoftPreview:
             tk.Label(self.results, text=f"{who}\n{turn['content']}", bg=BG, fg=TEXT, wraplength=480,
                      justify="left", anchor="w", font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
 
+    def _watched_folder_changed(self, root):
+        if self.engine is not None:
+            self.engine.note_root_changed(root)
+        self.events.put(("stale", root))
+
+    def sync_watcher(self):
+        if self.watcher is not None and self.engine is not None:
+            self.watcher.set_roots(self.engine.roots())
+
     def refresh_stale_markers(self):
         if self.demo or self.busy or not (self.library_window and self.library_window.winfo_exists()):
             return
@@ -1552,6 +1574,8 @@ class LoftPreview:
         self.cancel_animation()
         if self.theme_timer is not None:
             self.root.after_cancel(self.theme_timer)
+        if self.watcher is not None:
+            self.watcher.close()
         if self.searcher:
             self.searcher.close()
         if self.worker and self.worker.is_alive():

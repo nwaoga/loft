@@ -562,6 +562,8 @@ class Engine:
         self.database = Path(database or ROOT / "data" / "library.sqlite3")
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self.models = models or LocalModels()
+        self._changed_roots = set()
+        self._changed_lock = threading.Lock()
         with self.connect() as db:
             db.executescript("""
               CREATE TABLE IF NOT EXISTS roots(path TEXT PRIMARY KEY);
@@ -617,12 +619,23 @@ class Engine:
         with self.connect() as db:
             return db.execute("SELECT count(*) FROM files WHERE root=?", (root,)).fetchone()[0]
 
-    def root_is_stale(self, root):
-        """True when an indexed file's size or mtime no longer matches the index.
+    def note_root_changed(self, root):
+        with self._changed_lock:
+            self._changed_roots.add(str(root))
 
-        This is a manual check, not a folder watcher. New files that were never
-        indexed stay invisible until the user refreshes.
+    def clear_root_changed(self, root):
+        with self._changed_lock:
+            self._changed_roots.discard(str(root))
+
+    def root_is_stale(self, root):
+        """True when the folder changed since the last index.
+
+        Edits and deletions show up from stored mtimes. The folder watcher also
+        marks creates, edits, deletes, and moves. Refresh still does the reindex.
         """
+        with self._changed_lock:
+            if str(root) in self._changed_roots:
+                return True
         with self.connect() as db:
             rows = db.execute("SELECT path, mtime, size FROM files WHERE root=?", (root,)).fetchall()
         for path, mtime, size in rows:
@@ -741,6 +754,7 @@ class Engine:
         stats["dropped"] = drops["sample"]
         stats["dropped_total"] = drops["total"]
         stats["seconds"] = time.perf_counter()-started
+        self.clear_root_changed(str(root))
         return stats
 
     def retrieve(self, question, scope, cancel, emit):
