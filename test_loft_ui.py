@@ -9,6 +9,19 @@ from unittest.mock import patch
 from loft_preview import LoftPreview
 
 
+def results_label_text(root):
+    texts = []
+    for widget in root.winfo_children():
+        if isinstance(widget, tk.Label):
+            texts.append(widget.cget("text"))
+        elif isinstance(widget, tk.Canvas):
+            for item in widget.find_all():
+                if widget.type(item) == "text":
+                    texts.append(widget.itemcget(item, "text"))
+        texts.extend(results_label_text(widget))
+    return texts
+
+
 class StubEngine:
     def __init__(self):
         self.roots_list = []
@@ -80,6 +93,8 @@ class UIWorkerTests(unittest.TestCase):
         self.app.ask("How long?")
         self.wait_idle()
         self.assertEqual(self.app.answer_buffer, "The animation takes 240 ms. [S1]")
+        shown = " ".join(results_label_text(self.app.results))
+        self.assertIn("How long?", shown)
         self.assertEqual(self.app.last_hits[0]["citation"], "S1")
         self.assertTrue(self.app.sources_open)
         self.assertTrue(self.app.sources_detail.winfo_ismapped())
@@ -95,6 +110,22 @@ class UIWorkerTests(unittest.TestCase):
         self.assertEqual(children, self.app.results.winfo_children())
         release.set()
         self.wait_idle()
+
+    def test_settings_back_restores_chat_thread(self):
+        self.app.select_scope("Chat")
+        self.app.engine.chat_question = lambda q, cancel, emit, history=None: (
+            emit("chat", "Hi back") or {"answer": "Hi back"}
+        )
+        self.app.ask("hello")
+        self.wait_idle()
+        self.app.show_settings()
+        self.root.update()
+        self.assertTrue(self.app.in_settings)
+        self.app.leave_settings()
+        self.root.update()
+        shown = " ".join(results_label_text(self.app.results))
+        self.assertIn("Hi back", shown)
+        self.assertEqual(len(self.app.thread), 2)
 
     def test_search_while_busy_explains_why(self):
         release = threading.Event()
@@ -130,7 +161,7 @@ class UIWorkerTests(unittest.TestCase):
         self.app.engine.ask = ask
         self.app.ask("missing term")
         self.wait_idle()
-        notes = [widget.cget("text") for widget in self.app.results.winfo_children() if isinstance(widget, tk.Label)]
+        notes = results_label_text(self.app.results)
         self.assertTrue(any("keyword match" in text for text in notes))
         def fail(question, scope, cancel, emit):
             raise RuntimeError("Model server failed")
@@ -139,7 +170,7 @@ class UIWorkerTests(unittest.TestCase):
         self.wait_idle()
         self.assertIn("Model server failed", self.app.status.cget("text"))
         self.assertEqual(self.app.entry.cget("state"), "normal")
-        notes = [widget.cget("text") for widget in self.app.results.winfo_children() if isinstance(widget, tk.Label)]
+        notes = results_label_text(self.app.results)
         self.assertTrue(any("Model server failed" in text for text in notes))
 
     def test_index_summary_includes_skipped_files(self):
@@ -163,7 +194,7 @@ class UIWorkerTests(unittest.TestCase):
         self.assertIn("token.json (likely secret)", status)
         self.assertIn("build (build folder)", status)
         self.assertIn("and 2 more", status)
-        notes = [child.cget("text") for child in self.app.results.winfo_children() if isinstance(child, tk.Label)]
+        notes = results_label_text(self.app.results)
         self.assertTrue(any("token.json (likely secret)" in text for text in notes))
     def test_unsupported_answer_terms_are_flagged(self):
         def ask(question, scope, cancel, emit):
@@ -176,16 +207,19 @@ class UIWorkerTests(unittest.TestCase):
         self.app.ask("animation")
         self.wait_idle()
         self.assertEqual(self.app.support_line(), "Not in the cited passage: registration, AB12")
-        caption = self.app.answer_card.winfo_children()[0].cget("text")
-        self.assertIn("not fully supported", caption)
-        box = self.app.answer_text
-        self.assertIsInstance(box, tk.Text)
-        self.assertTrue(box.tag_nextrange("gap", "1.0"))
+        texts = []
+        def collect(widget):
+            if isinstance(widget, tk.Label):
+                texts.append(widget.cget("text"))
+            for child in widget.winfo_children():
+                collect(child)
+        collect(self.app.results)
+        joined = " ".join(texts)
+        self.assertIn("registration", joined)
         self.app.show_answer()
         self.root.update()
         self.assertIn("not fully supported", self.app.answer_window.title())
         self.assertTrue(self.app.full_answer.tag_nextrange("gap", "1.0"))
-        self.assertIn("registration", self.app.answer_gap_note.cget("text"))
 
     def test_refresh_without_selection_explains(self):
         self.app.manage_library()
@@ -273,7 +307,7 @@ class UIWorkerTests(unittest.TestCase):
         self.app.select_scope("Chat")
         self.root.update()
         self.assertEqual(self.app.answer_buffer, "")
-        visible = " ".join(child.cget("text") for child in self.app.results.winfo_children() if isinstance(child, tk.Label))
+        visible = " ".join(results_label_text(self.app.results))
         self.assertNotIn("240", visible)
         self.assertIn("Press Enter", self.app.status.cget("text"))
         calls = []
@@ -290,7 +324,7 @@ class UIWorkerTests(unittest.TestCase):
         self.assertEqual(calls[1][0], "Second")
         self.assertEqual(calls[1][1][0]["content"], "First")
         self.assertEqual(calls[1][1][1]["content"], "Reply to First")
-        shown = " ".join(child.cget("text") for child in self.app.results.winfo_children() if isinstance(child, tk.Label))
+        shown = " ".join(results_label_text(self.app.results))
         self.assertIn("Reply to First", shown)
         self.assertIn("Reply to Second", shown)
 

@@ -1,7 +1,7 @@
 """Read-only Windows shell theme adapter."""
 import sys
 
-DEFAULT = ("#101113", "#1c1e22", "#f1f2f4", "#a0a5af", "#b8d8ca", "#30343a")
+DEFAULT = ("#0d0e12", "#181a20", "#f4f5f7", "#8b919c", "#4f8cff", "#2a2d35")
 
 
 def mix(a, b, fraction):
@@ -16,8 +16,9 @@ def luminance(colour):
 
 def palette(background):
     # Keep the shell quiet; use the taskbar hue as a tint and focus accent.
-    return (mix("#141416", background, 0.06), mix("#222225", background, 0.07),
-            "#f4f4f5", "#a3a3ac", mix(background, "#ffffff", 0.65), "#303036")
+    accent = mix("#4f8cff", mix(background, "#ffffff", 0.65), 0.35)
+    return (mix("#0f1014", background, 0.06), mix("#1a1c22", background, 0.07),
+            "#f4f4f5", "#8b919c", accent, "#2a2d35")
 
 
 def windows_palette():

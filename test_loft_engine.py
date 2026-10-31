@@ -209,6 +209,26 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(hits[0]["path"].endswith("receipt.pdf"))
         self.assertIn("Page 1", hits[0]["text"])
         self.assertIn("eight pounds", hits[0]["text"])
+
+    def test_scanned_pdf_is_read_with_ocr(self):
+        import io
+        import fitz
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (420, 80), "white")
+        ImageDraw.Draw(image).text((12, 24), "Flight Lois itinerary", fill="black")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        document = fitz.open()
+        page = document.new_page(width=420, height=80)
+        page.insert_image(page.rect, stream=buffer.getvalue())
+        raw = document.tobytes()
+        document.close()
+        text, reason = read_indexed_text(self.folder / "scan.pdf", raw)
+        self.assertIsNone(reason)
+        self.assertIn("Page 1", text)
+        self.assertRegex(text.lower(), r"flight|lois|itinerary")
+
     def _pdf(self, sentence):
         return f"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj

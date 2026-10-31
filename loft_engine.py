@@ -436,8 +436,51 @@ def chunks(text, maximum=1000, overlap_lines=0, code=False):
         yield block[0][0], block[-1][0], "".join(piece for _, piece in block)
 
 
+_ocr_engine = None
+
+
+def pdf_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def extract_pdf_ocr(raw):
+    """Read scanned/image PDF pages with a local OCR model. No network."""
+    import pymupdf as fitz
+    import numpy as np
+
+    pages = []
+    try:
+        document = fitz.open(stream=raw, filetype="pdf")
+    except Exception as exc:
+        raise ValueError("unreadable PDF") from exc
+    try:
+        if document.is_encrypted:
+            raise ValueError("encrypted PDF")
+        engine = pdf_ocr_engine()
+        for number, page in enumerate(document, 1):
+            pixmap = page.get_pixmap(dpi=150, alpha=False)
+            image = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(pixmap.height, pixmap.width, pixmap.n)
+            if pixmap.n == 4:
+                image = image[:, :, :3]
+            result, _elapsed = engine(image)
+            if not result:
+                continue
+            text = "\n".join(line[1] for line in result)
+            if text.strip():
+                pages.append(f"Page {number}\n{text.strip()}\n")
+    finally:
+        document.close()
+    if not pages:
+        raise ValueError("no extractable text")
+    return "\n".join(pages)
+
+
 def extract_pdf_text(raw):
-    """Local PDF text via pypdf. No network and no license key.
+    """Local PDF text via pypdf, with OCR fallback for scanned pages.
 
     Page numbers are written into the extracted text because a PDF has no
     source line numbers. Encrypted files are refused rather than guessed.
@@ -464,9 +507,12 @@ def extract_pdf_text(raw):
             raise ValueError("unreadable PDF") from exc
         if page_text.strip():
             pages.append(f"Page {number}\n{page_text.strip()}\n")
-    if not pages:
-        raise ValueError("no extractable text")
-    return "\n".join(pages)
+    if pages:
+        return "\n".join(pages)
+    try:
+        return extract_pdf_ocr(raw)
+    except ImportError as exc:
+        raise ValueError("scanned PDF — pip install -r requirements.txt") from exc
 
 
 def read_indexed_text(path, raw):
@@ -474,6 +520,8 @@ def read_indexed_text(path, raw):
     if path.suffix.lower() in PDF:
         try:
             text = extract_pdf_text(raw)
+        except ImportError:
+            return "", "PDF support missing — pip install -r requirements.txt"
         except ValueError as exc:
             return "", str(exc)
         if SECRET_CONTENT.search(text):

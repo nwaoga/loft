@@ -17,6 +17,13 @@ For a fresh Windows x64 installation (Python 3.11+ with Tkinter):
 ```powershell
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
+```
+
+`requirements.txt` includes local OCR for scanned PDFs (image-only pages). The
+first scanned PDF during indexing loads the OCR model and can take longer than
+plain text files.
+
+```powershell
 .venv/Scripts/python setup_runtime.py
 .venv/Scripts/python loft_preview.py --expanded
 ```

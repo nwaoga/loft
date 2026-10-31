@@ -14,16 +14,24 @@ import tkinter as tk
 from tkinter import scrolledtext, filedialog, messagebox
 
 from loft_bench import ROOT, FakeEmbedding, Index
-from loft_engine import format_dropped
-from loft_theme import windows_palette
+from loft_engine import CODE, format_dropped
+from loft_theme import DEFAULT, windows_palette
 
-BG = "#101113"
-PANEL = "#1c1e22"
-TEXT = "#f1f2f4"
-MUTED = "#a0a5af"
-ACCENT = "#b8d8ca"
-HOVER = "#30343a"
+BG = "#0d0e12"
+PANEL = "#181a20"
+TEXT = "#f4f5f7"
+MUTED = "#8b919c"
+ACCENT = "#4f8cff"
+GLOW = "#1e4a8c"
+GLOW_SOFT = "#2a5080"
+HOVER = "#2a2d35"
 ERROR = "#f0b4a8"
+SUCCESS = "#3ecf8e"
+CARD = "#1e2128"
+BUBBLE_ASSIST = "#22252c"
+BUBBLE_RADIUS = 14
+BUBBLE_WRAP = 340
+CONVERSATION_HEIGHT = 620
 STOP = set("a an the i my have has is are was were for to of in on does do where when which files involved taking today me find paid".split())
 CODE_WORDS = set("def class return if elif else for while import from as try except with lambda pass break continue and or not in True False None python powershell pwsh".split())
 
@@ -133,26 +141,182 @@ class DemoSearch:
             index.db.close()
 
 
+def enable_dpi_awareness():
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (OSError, AttributeError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (OSError, AttributeError):
+            pass
+
+
+def hex_to_rgb(colour):
+    colour = colour.lstrip("#")
+    return tuple(int(colour[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def smooth_round_photo(master, width, height, radius, fill, outline=None, outline_width=0):
+    """Antialiased rounded rect as a PhotoImage (Pillow), or None if unavailable."""
+    width, height = max(1, int(width)), max(1, int(height))
+    radius = min(int(radius), width // 2, height // 2)
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except ImportError:
+        return None
+    scale = 3
+    w, h = width * scale, height * scale
+    r = min(radius * scale, w // 2, h // 2)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    box = (0, 0, w - 1, h - 1)
+    if outline and outline_width:
+        ow = max(1, int(outline_width * scale))
+        rgb_o = hex_to_rgb(outline)
+        draw.rounded_rectangle(box, radius=r, outline=rgb_o + (255,), width=ow)
+        inset = ow // 2 + scale
+        inner = (inset, inset, w - 1 - inset, h - 1 - inset)
+        ir = max(1, r - inset)
+        draw.rounded_rectangle(inner, radius=ir, fill=hex_to_rgb(fill) + (255,))
+    else:
+        draw.rounded_rectangle(box, radius=r, fill=hex_to_rgb(fill) + (255,))
+    img = img.resize((width, height), Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(img, master=master)
+
+
+def canvas_round_rect(canvas, x1, y1, x2, y2, radius, fill, tags="bubble"):
+    canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline="", tags=tags)
+    canvas.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline="", tags=tags)
+    for x, y, start in ((x1, y1, 90), (x2 - 2 * radius, y1, 0),
+                        (x1, y2 - 2 * radius, 180), (x2 - 2 * radius, y2 - 2 * radius, 270)):
+        canvas.create_arc(x, y, x + 2 * radius, y + 2 * radius, start=start, extent=90,
+                          fill=fill, outline="", tags=tags)
+
+
+class BubbleView:
+    """Rounded chat bubble backed by a canvas + text item."""
+    def __init__(self, canvas, text_id, pad, fill):
+        self.canvas = canvas
+        self.text_id = text_id
+        self.pad = pad
+        self.fill = fill
+        self._photo = None
+
+    def winfo_exists(self):
+        try:
+            return self.canvas.winfo_exists()
+        except tk.TclError:
+            return False
+
+    def configure(self, *, text=None, fg=None):
+        if text is not None:
+            self.canvas.itemconfigure(self.text_id, text=text)
+        if fg is not None:
+            self.canvas.itemconfigure(self.text_id, fill=fg)
+        self._resize()
+
+    def _resize(self):
+        self.canvas.update_idletasks()
+        box = self.canvas.bbox(self.text_id)
+        if not box:
+            return
+        x1, y1, x2, y2 = box
+        w = int(x2 - x1 + self.pad * 2)
+        h = int(y2 - y1 + self.pad * 2)
+        self.canvas.configure(width=w, height=h)
+        self.canvas.delete("bubble")
+        photo = smooth_round_photo(self.canvas, w, h, BUBBLE_RADIUS, self.fill)
+        if photo is not None:
+            self._photo = photo
+            self.canvas.create_image(0, 0, anchor="nw", image=photo, tags="bubble")
+        else:
+            canvas_round_rect(self.canvas, 0, 0, w, h, BUBBLE_RADIUS, self.fill)
+        self.canvas.tag_lower("bubble")
+        self.canvas.coords(self.text_id, self.pad, self.pad)
+
+
+def bubble_text_id(canvas, text, pad, fg, font):
+    """Create wrapped text without forcing full wrap width on short messages."""
+    base = dict(text=text or " ", anchor="nw", fill=fg, font=font)
+    tid = canvas.create_text(pad, pad, **base)
+    canvas.update_idletasks()
+    box = canvas.bbox(tid)
+    if box and box[2] - box[0] > BUBBLE_WRAP:
+        canvas.delete(tid)
+        tid = canvas.create_text(pad, pad, **base, width=BUBBLE_WRAP)
+    return tid
+
+
 class RoundedSurface(tk.Canvas):
-    """Rounded input surround with a normal accessible Entry inside."""
+    """Rounded search field with accent border."""
     def __init__(self, parent):
-        super().__init__(parent, bg=BG, height=44, highlightthickness=0)
+        super().__init__(parent, bg=BG, height=48, highlightthickness=0)
         self.inner = tk.Frame(self, bg=PANEL)
-        self.window_id = self.create_window(12, 7, window=self.inner, anchor="nw")
+        self.window_id = self.create_window(14, 9, window=self.inner, anchor="nw")
         self.bind("<Configure>", self.draw)
+        self._outline = ACCENT
+        self._busy = False
+        self._compose = False
+        self._surface_photo = None
+
+    def set_compose(self, active):
+        self._compose = bool(active)
+        self.draw()
+
+    def set_busy(self, active):
+        self._busy = bool(active)
+        self.draw()
+
+    def set_outline(self, color):
+        self._outline = color
+        self.draw()
 
     def draw(self, event=None):
-        width = self.winfo_width()
+        width = max(self.winfo_width(), 120)
         self.delete("surface")
-        radius, height = 14, 44
-        self.create_rectangle(radius, 0, width-radius, height, fill=PANEL, outline="", tags="surface")
-        self.create_rectangle(0, radius, width, height-radius, fill=PANEL, outline="", tags="surface")
-        for x, y, start in ((0, 0, 90), (width-2*radius, 0, 0),
-                            (0, height-2*radius, 180), (width-2*radius, height-2*radius, 270)):
-            self.create_arc(x, y, x+2*radius, y+2*radius, start=start, extent=90,
-                            fill=PANEL, outline="", tags="surface")
+        height = 52 if self._compose else 48
+        radius = 18 if self._compose else 16
+        outline = ACCENT if self._busy else (HOVER if self._compose else self._outline)
+        ow = 1 if self._compose and not self._busy else 2
+        photo = smooth_round_photo(self, width, height, radius, PANEL, outline=outline, outline_width=ow)
+        if photo is not None:
+            self._surface_photo = photo
+            self.create_image(0, 0, anchor="nw", image=photo, tags="surface")
+        else:
+            self._round_rect(1, 1, width - 1, height - 1, radius, outline=outline, width=ow)
+            self._round_rect(2, 2, width - 2, height - 2, radius - 1, fill=PANEL)
         self.tag_lower("surface")
-        self.itemconfigure(self.window_id, width=max(1, width-24), height=30)
+        self.configure(height=height)
+        inner_h = 34 if self._compose else 30
+        y_off = 10 if self._compose else 9
+        self.coords(self.window_id, 14, y_off)
+        self.itemconfigure(self.window_id, width=max(1, width - 28), height=inner_h)
+
+    def _round_rect(self, x1, y1, x2, y2, radius, fill=None, outline="", width=1):
+        tags = "surface"
+        if fill:
+            self.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline="", tags=tags)
+            self.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline="", tags=tags)
+            for x, y, start in ((x1, y1, 90), (x2 - 2 * radius, y1, 0),
+                                (x1, y2 - 2 * radius, 180), (x2 - 2 * radius, y2 - 2 * radius, 270)):
+                self.create_arc(x, y, x + 2 * radius, y + 2 * radius, start=start, extent=90,
+                                fill=fill, outline="", tags=tags)
+        elif outline:
+            self.create_arc(x1, y1, x1 + 2 * radius, y1 + 2 * radius, start=90, extent=90,
+                            style="arc", outline=outline, width=width, tags=tags)
+            self.create_arc(x2 - 2 * radius, y1, x2, y1 + 2 * radius, start=0, extent=90,
+                            style="arc", outline=outline, width=width, tags=tags)
+            self.create_arc(x1, y2 - 2 * radius, x1 + 2 * radius, y2, start=180, extent=90,
+                            style="arc", outline=outline, width=width, tags=tags)
+            self.create_arc(x2 - 2 * radius, y2 - 2 * radius, x2, y2, start=270, extent=90,
+                            style="arc", outline=outline, width=width, tags=tags)
+            self.create_line(x1 + radius, y1, x2 - radius, y1, fill=outline, width=width, tags=tags)
+            self.create_line(x1 + radius, y2, x2 - radius, y2, fill=outline, width=width, tags=tags)
+            self.create_line(x1, y1 + radius, x1, y2 - radius, fill=outline, width=width, tags=tags)
+            self.create_line(x2, y1 + radius, x2, y2 - radius, fill=outline, width=width, tags=tags)
 
 
 class LoftPreview:
@@ -182,6 +346,11 @@ class LoftPreview:
             self.sync_watcher()
         self.expanded = False
         self.animation_timer = None
+        self.busy_anim_timer = None
+        self.busy_pulse = 0.0
+        self.spinner_angle = 0
+        self.answer_skeleton = None
+        self.progress_track = None
         self.motion_ready = False
         self.scope = "All"
         self.source_window = None
@@ -195,7 +364,18 @@ class LoftPreview:
         self.sources_open = False
         self.support_gaps = []
         self.support_note = None
+        self.answer_heading = None
+        self.answer_body = None
+        self.caution_frame = None
+        self.caution_label = None
+        self.sources_wrap = None
         self.chat_history = []
+        self.thread = []
+        self.file_thread = []
+        self.chat_thread = []
+        self._bubble_photos = []
+        self._pinned_height = None
+        self._input_at_bottom = False
         self.pending_chat = ""
         self._stale_checked = 0.0
         self.library_topmost = False
@@ -203,6 +383,7 @@ class LoftPreview:
         self.folder_rows = []
         self._status_error = False
         self.awaiting_empty_note = False
+        self.in_settings = False
         self.origin = None
         self._press = None
         self.use_settings = use_settings
@@ -241,43 +422,70 @@ class LoftPreview:
         header = self.header = tk.Frame(self.body, bg=BG, cursor="fleur")
         header.pack(fill="x")
         self.bind_drag(header)
-        title = tk.Label(header, text="loft", bg=BG, fg=TEXT, font=("Segoe UI", 13, "bold"), cursor="fleur")
+        title = tk.Label(header, text="loft", bg=BG, fg=TEXT, font=("Segoe UI", 14, "bold"), cursor="fleur")
         title.pack(side="left")
         self.bind_drag(title)
-        local = tk.Label(header, text="  ·  Local", bg=BG, fg=ACCENT, font=("Segoe UI", 9), cursor="fleur")
+        dot = tk.Canvas(header, width=10, height=10, bg=BG, highlightthickness=0, cursor="fleur")
+        dot.create_oval(2, 2, 8, 8, fill=ACCENT, outline="")
+        dot.pack(side="left", padx=(8, 4))
+        self.bind_drag(dot)
+        local = tk.Label(header, text="Local", bg=BG, fg=MUTED, font=("Segoe UI", 10), cursor="fleur")
         local.pack(side="left")
         self.bind_drag(local)
+        self.button(header, "⚙", self.show_settings, muted=True).pack(side="right", padx=(4, 0))
         self.button(header, "×", self.close, muted=True).pack(side="right")
-        self.button(header, "−", self.collapse, muted=True).pack(side="right")
-        tk.Label(header, text="Ctrl+K", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="right", padx=(0, 6))
         self.input_surface = RoundedSurface(self.body)
-        self.input_surface.pack(fill="x", pady=(8, 6))
+        self.input_surface.pack(fill="x", pady=(10, 8))
         row = self.input_surface.inner
-        tk.Label(row, text="\u2315", bg=PANEL, fg=MUTED, font=("Segoe UI Symbol", 12)).pack(side="left", padx=(2, 4))
+        self.compose_plus = self.button(row, "+", self.compose_attach, muted=True)
+        self.search_icon = tk.Label(row, text="🔍", bg=PANEL, fg=MUTED, font=("Segoe UI", 11))
+        self.search_icon.pack(side="left", padx=(0, 6))
         self.question = tk.StringVar()
         self.entry = tk.Entry(row, textvariable=self.question, bg=PANEL, fg=TEXT,
-                              insertbackground=ACCENT, relief="flat", font=("Segoe UI", 13))
+                              insertbackground=ACCENT, relief="flat", font=("Segoe UI", 12),
+                              disabledbackground=PANEL, disabledforeground=MUTED, readonlybackground=PANEL,
+                              highlightthickness=0, bd=0)
         self.entry.pack(side="left", fill="x", expand=True, ipady=2)
         self.entry.bind("<Return>", lambda _: self.search())
-        self.button(row, "↵", self.search).pack(side="right")
-        self.placeholder = tk.Label(self.entry, text="Ask your files…", bg=PANEL,
+        self.model_picker = tk.Button(
+            row, text="Model  ▾", command=self.open_model_menu, bg=PANEL, fg=MUTED,
+            activebackground=PANEL, activeforeground=TEXT, relief="flat", bd=0, padx=6, pady=2,
+            cursor="hand2", font=("Segoe UI", 9), highlightthickness=0,
+        )
+        self.model_menu = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=TEXT,
+                                  activebackground=HOVER, activeforeground=TEXT, borderwidth=0)
+        self.send_button = tk.Button(
+            row, text="↑", command=self.search, bg=ACCENT, fg=BG,
+            activebackground=ACCENT, activeforeground=BG, relief="flat", bd=0,
+            width=2, padx=6, pady=0, cursor="hand2", font=("Segoe UI", 12, "bold"),
+            highlightthickness=0,
+        )
+        self.send_button.pack(side="right", padx=(4, 0))
+        self.placeholder = tk.Label(self.entry, text="Ask your files...", bg=PANEL,
                                     fg=MUTED, font=("Segoe UI", 12), cursor="xterm")
         self.placeholder.place(x=0, rely=0.5, anchor="w")
         self.placeholder.bind("<Button-1>", lambda _: self.entry.focus_set())
         self.question.trace_add("write", self.update_placeholder)
+        self._compose_bar = False
         scopes = self.scopes = tk.Frame(self.body, bg=BG)
-        scopes.pack(fill="x", pady=(0, 6))
+        scopes.pack(fill="x", pady=(0, 8))
         self.scope_buttons = {}
+        scope_labels = {
+            "All": "▦  Everything",
+            "Documents": "📄  Documents",
+            "Code": "</>  Code",
+            "Chat": "💬  Chat",
+        }
         for scope in (("All", "Documents", "Code") if demo else ("All", "Documents", "Code", "Chat")):
-            button = self.button(scopes, "Everything" if scope == "All" else scope, lambda s=scope: self.select_scope(s), muted=True)
-            button.pack(side="left", padx=(12 if scope == "Chat" else 0, 4))
+            button = self.button(scopes, scope_labels[scope], lambda s=scope: self.select_scope(s), muted=True)
+            button.pack(side="left", padx=(0, 6))
             self.scope_buttons[scope] = button
-        if not demo:
-            self.button(scopes, "Folders", self.manage_library, muted=True).pack(side="left", padx=(8, 0))
-        self.button(scopes, "Settings", self.show_settings, muted=True).pack(side="left", padx=(8, 0))
-        self.status = tk.Label(self.body, bg=BG, fg=MUTED, anchor="w", justify="left",
-                               font=("Segoe UI", 10), wraplength=490)
-        self.status.pack(fill="x", pady=(0, 4))
+        self.status_row = tk.Frame(self.body, bg=BG)
+        self.status_row.pack(fill="x", pady=(0, 4))
+        self.spinner = tk.Canvas(self.status_row, width=18, height=18, bg=BG, highlightthickness=0)
+        self.status = tk.Label(self.status_row, bg=BG, fg=MUTED, anchor="w", justify="left",
+                               font=("Segoe UI", 10), wraplength=470)
+        self.status.pack(side="left", fill="x", expand=True)
         self.scroll_host = tk.Frame(self.body, bg=BG)
         self.scroll_host.pack(fill="x")
         self.scroll = tk.Canvas(self.scroll_host, bg=BG, height=1, highlightthickness=0, bd=0)
@@ -294,12 +502,16 @@ class LoftPreview:
         self.root.bind_all("<Button-4>", self._on_results_wheel)
         self.root.bind_all("<Button-5>", self._on_results_wheel)
         footer = self.footer = tk.Frame(self.body, bg=BG)
-        footer.pack(fill="x", pady=(8, 0))
-        self.library_label = tk.Label(footer, text="Sample library · 5 files · Search only" if demo else f"Your library · {self.engine.count()} files · On device",
+        footer.pack(fill="x", pady=(10, 0))
+        self.library_label = tk.Label(footer, text=self.library_summary(),
                  bg=BG, fg=MUTED, font=("Segoe UI", 9))
         self.library_label.pack(side="left")
-        self.drag_hint = tk.Label(footer, text="drag title to move", bg=BG, fg=MUTED, font=("Segoe UI", 9))
-        self.drag_hint.pack(side="right")
+        local_row = self.local_row = tk.Frame(footer, bg=BG)
+        local_row.pack(side="right")
+        live = tk.Canvas(local_row, width=10, height=10, bg=BG, highlightthickness=0)
+        live.create_oval(2, 2, 8, 8, fill=SUCCESS, outline="")
+        live.pack(side="left", padx=(0, 6))
+        tk.Label(local_row, text="Local", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
         self.style_scopes()
         self.show_welcome()
         self.collapse()
@@ -327,6 +539,7 @@ class LoftPreview:
         self._shown_phase = None
         self.cancel_work = threading.Event()
         self.entry.configure(state="disabled")
+        self.sync_entry_style()
         self.root.after_idle(self.fit_content)
         captured = kind
         def emit(kind, value):
@@ -341,6 +554,7 @@ class LoftPreview:
                 emit("idle", {"cancelled": self.cancel_work.is_set()})
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
+        self.start_busy_fx()
         return True
 
     def _worker_error(self, exc, kind):
@@ -355,7 +569,7 @@ class LoftPreview:
         if self.stop_button is None or not self.stop_button.winfo_exists():
             self.stop_button = self.button(self.footer, "Stop", lambda: self.cancel_work.set())
             self.stop_button.configure(bg=ACCENT, fg=BG, activebackground=ACCENT, activeforeground=BG)
-            self.stop_button.pack(side="right", padx=(0, 6), before=self.drag_hint)
+            self.stop_button.pack(side="right", padx=(0, 8), before=self.local_row)
         if self.compact_stop is not None and not self.compact_stop.winfo_ismapped():
             self.compact_stop.pack(side="left", before=self.compact_close)
 
@@ -388,6 +602,92 @@ class LoftPreview:
         short = self.phase_text if len(self.phase_text) <= 42 else self.phase_text[:41] + "…"
         self.compact_title.configure(text=f"loft    {short}    {second}s")
 
+    def start_busy_fx(self):
+        self.stop_busy_fx(keep_phase=True)
+        self.spinner.pack(side="left", padx=(0, 8), before=self.status)
+        self.tick_busy_fx()
+
+    def stop_busy_fx(self, keep_phase=False):
+        if self.busy_anim_timer is not None:
+            self.root.after_cancel(self.busy_anim_timer)
+            self.busy_anim_timer = None
+        if not keep_phase:
+            self.busy_pulse = 0.0
+            self.spinner_angle = 0
+        self.canvas.delete("work_border")
+        if hasattr(self, "input_surface"):
+            self.input_surface.set_busy(False)
+            self.input_surface.set_outline(ACCENT)
+        if hasattr(self, "spinner") and self.spinner.winfo_exists():
+            self.spinner.delete("all")
+            if self.spinner.winfo_ismapped():
+                self.spinner.pack_forget()
+
+    def tick_busy_fx(self):
+        if self.closed or not self.busy:
+            self.stop_busy_fx()
+            return
+        self.draw_spinner()
+        self.busy_anim_timer = self.root.after(120, self.tick_busy_fx)
+
+    def draw_spinner(self):
+        self.spinner.delete("all")
+        self.spinner.create_oval(3, 3, 15, 15, outline=HOVER, width=2)
+        start = self.spinner_angle
+        self.spinner_angle = (self.spinner_angle + 24) % 360
+        self.spinner.create_arc(3, 3, 15, 15, start=start, extent=75, style="arc",
+                                outline=ACCENT, width=2)
+
+    def draw_work_border(self):
+        self.canvas.delete("work_border")
+        target = self.body_id if self.expanded else self.compact_id
+        try:
+            box = self.canvas.bbox(target)
+        except tk.TclError:
+            return
+        if not box:
+            return
+        pad = 6
+        x1, y1, x2, y2 = box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad
+        radius = 22 if self.expanded else 14
+        self._canvas_round_outline(self.canvas, x1, y1, x2, y2, radius, GLOW_SOFT, 4, "work_border")
+        inset = 2
+        self._canvas_round_outline(self.canvas, x1 + inset, y1 + inset, x2 - inset, y2 - inset,
+                                   max(radius - 2, 8), ACCENT, 2, "work_border")
+
+    def _canvas_round_outline(self, canvas, x1, y1, x2, y2, radius, color, width, tags):
+        canvas.create_arc(x1, y1, x1 + 2 * radius, y1 + 2 * radius, start=90, extent=90,
+                          style="arc", outline=color, width=width, tags=tags)
+        canvas.create_arc(x2 - 2 * radius, y1, x2, y1 + 2 * radius, start=0, extent=90,
+                          style="arc", outline=color, width=width, tags=tags)
+        canvas.create_arc(x1, y2 - 2 * radius, x1 + 2 * radius, y2, start=180, extent=90,
+                          style="arc", outline=color, width=width, tags=tags)
+        canvas.create_arc(x2 - 2 * radius, y2 - 2 * radius, x2, y2, start=270, extent=90,
+                          style="arc", outline=color, width=width, tags=tags)
+        canvas.create_line(x1 + radius, y1, x2 - radius, y1, fill=color, width=width, tags=tags)
+        canvas.create_line(x1 + radius, y2, x2 - radius, y2, fill=color, width=width, tags=tags)
+        canvas.create_line(x1, y1 + radius, x1, y2 - radius, fill=color, width=width, tags=tags)
+        canvas.create_line(x2, y1 + radius, x2, y2 - radius, fill=color, width=width, tags=tags)
+
+    def draw_answer_progress(self):
+        if self.progress_track is None or not self.progress_track.winfo_exists():
+            return
+        if self.answer_buffer.strip():
+            return
+        self.progress_track.delete("all")
+        width = max(self.progress_track.winfo_width(), 240)
+        self.progress_track.create_rectangle(0, 1, width, 5, fill=HOVER, outline="")
+        segment = max(48, width // 4)
+        travel = max(1, width - segment)
+        x = int(travel * self.busy_pulse)
+        self.progress_track.create_rectangle(x, 1, x + segment, 5, fill=ACCENT, outline="")
+
+    def hide_answer_loading_chrome(self):
+        if self.progress_track is not None and self.progress_track.winfo_exists() and self.progress_track.winfo_ismapped():
+            self.progress_track.pack_forget()
+        if self.answer_skeleton is not None and self.answer_skeleton.winfo_exists() and self.answer_skeleton.winfo_ismapped():
+            self.answer_skeleton.pack_forget()
+
     def show_note(self, message, color=None):
         tk.Label(self.results, text=message, bg=BG, fg=color or TEXT, wraplength=490,
                  justify="left", anchor="w", font=("Segoe UI", 11)).pack(anchor="w", fill="x", pady=(4, 6))
@@ -406,6 +706,7 @@ class LoftPreview:
                 self.hide_stop()
                 try:
                     self.entry.configure(state="normal")
+                    self.sync_entry_style()
                 except tk.TclError:
                     pass
             try:
@@ -435,45 +736,45 @@ class LoftPreview:
                 if self.job_kind == "index":
                     self.set_library_status(value, ACCENT)
                 if self.awaiting_empty_note:
-                    self.show_note(value)
-                    self.awaiting_empty_note = False
+                    self.render_thread()
                 changed = True
             elif kind == "chat":
                 self.awaiting_empty_note = False
                 if self.pending_chat:
-                    self.chat_history.append({"role": "user", "content": self.pending_chat})
+                    self.thread.append({"role": "user", "text": self.pending_chat})
                     self.pending_chat = ""
-                self.chat_history.append({"role": "assistant", "content": value})
-                self.chat_history = self.chat_history[-6:]
-                self.clear_results()
-                self.render_chat_transcript()
+                self.thread.append({"role": "assistant", "text": value})
+                self.chat_history = self.chat_context()
+                if self.scope == "Chat":
+                    self.chat_thread = list(self.thread)
+                self.render_thread()
                 self.root.lift()
                 changed = True
             elif kind == "support":
                 self.support_gaps = list(value or [])
-                self.show_support_flag()
+                self.render_thread()
                 changed = True
             elif kind == "sources":
                 self.support_gaps = []
                 self.last_hits = value or []
-                self.clear_results()
+                self.sources_open = bool(value)
                 if value:
                     self.awaiting_empty_note = False
-                    self.present_streaming()
-                    self.present_sources(value)
-                    actions = tk.Frame(self.results, bg=BG)
-                    actions.pack(fill="x", pady=(6, 0))
-                    self.button(actions, "Read full answer", self.show_answer, muted=True).pack(side="left")
                 else:
                     self.awaiting_empty_note = True
+                self.render_thread()
                 self.root.lift()
                 changed = True
             elif kind == "token":
                 self.answer_buffer += value
                 preview = self.answer_buffer[:450]
-                if self.answer_text is not None and self.answer_text.winfo_exists():
-                    shown = preview + ("…" if len(self.answer_buffer) > 450 else "")
-                    self.answer_text.configure(text=shown)
+                shown = preview + ("…" if len(self.answer_buffer) > 450 else "")
+                if self.live_assistant_label is not None and self.live_assistant_label.winfo_exists():
+                    self.live_assistant_label.configure(text=shown, fg=TEXT)
+                elif self.answer_text is not None and self.answer_text.winfo_exists():
+                    self.answer_text.configure(text=shown, fg=TEXT)
+                else:
+                    self.render_thread()
                 if self.answer_window and self.answer_window.winfo_exists() and getattr(self, "full_answer", None):
                     self.full_answer.configure(state="normal")
                     self.full_answer.insert("end", value)
@@ -514,17 +815,25 @@ class LoftPreview:
                     self.show_note(detail, MUTED)
             elif kind == "idle":
                 cancelled = isinstance(value, dict) and bool(value.get("cancelled"))
+                finishing = self.job_kind
                 self.busy = False
                 self.job_kind = None
                 self.hide_stop()
                 self.finish_answer()
+                if finishing == "ask" and not self.demo:
+                    self.finalize_file_turn()
+                elif finishing == "chat":
+                    self.sync_status_strip()
                 self.restore_compact()
-                if self.phase_text:
+                if self.phase_text and (self._status_error or not self.thread):
                     self.status.configure(text=self.phase_text, fg=ERROR if self._status_error else MUTED)
+                self.sync_status_strip()
                 self.entry.configure(state="normal")
+                self.sync_entry_style()
+                self.stop_busy_fx()
                 changed = True
                 if self.engine is not None:
-                    self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
+                    self.refresh_library_summary()
                     self.sync_watcher()
                 if self.library_window and self.library_window.winfo_exists():
                     self.refresh_library_list()
@@ -774,7 +1083,7 @@ class LoftPreview:
         if folder in self.pending_folders:
             self.pending_folders.remove(folder)
         self.refresh_library_list()
-        self.library_label.configure(text=f"Your library · {self.engine.count()} files · On device")
+        self.refresh_library_summary()
         self.clear_results()
         self._status_error = False
         noun = "file" if count == 1 else "files"
@@ -790,14 +1099,121 @@ class LoftPreview:
                        "Original files stay on disk.")
         return messagebox.askyesno("Loft · Remove folder", message, parent=self.library_window)
 
+    def sync_entry_style(self):
+        if not getattr(self, "entry", None):
+            return
+        try:
+            if not self.entry.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        state = str(self.entry.cget("state"))
+        self.entry.configure(bg=PANEL, insertbackground=ACCENT, disabledbackground=PANEL,
+                             disabledforeground=MUTED, readonlybackground=PANEL,
+                             fg=TEXT if state == "normal" else MUTED)
+        if getattr(self, "placeholder", None) and self.placeholder.winfo_exists():
+            self.placeholder.configure(bg=PANEL)
+        if getattr(self, "model_picker", None) and self.model_picker.winfo_exists():
+            self.model_picker.configure(bg=PANEL, activebackground=PANEL)
+        self.refresh_model_picker()
+
     def update_placeholder(self, *_):
         if self.question.get():
             self.placeholder.place_forget()
         else:
             self.placeholder.place(x=0, rely=0.5, anchor="w")
 
+    def selected_model_title(self):
+        if self.demo or self.engine is None:
+            return "Sample model"
+        models_api = getattr(self.engine, "models", None)
+        if models_api is None:
+            return "Local model"
+        try:
+            selected = models_api.selected_answer()
+        except (RuntimeError, KeyError, ValueError, OSError):
+            return "Choose model"
+        if not selected:
+            return "Choose model"
+        title = selected.get("title") or Path(selected["file"]).stem
+        return title
+
+    def refresh_model_picker(self):
+        if not getattr(self, "model_picker", None) or not self.model_picker.winfo_exists():
+            return
+        title = self.selected_model_title()
+        if len(title) > 20:
+            title = title[:19] + "…"
+        self.model_picker.configure(text=f"{title}  ▾")
+
+    def open_model_menu(self):
+        if self.demo or self.engine is None:
+            self.note_phase("Models are not available in demo mode.")
+            return
+        self.model_menu.delete(0, "end")
+        entries = self.model_entries(self.engine.models)
+        if not entries:
+            self.model_menu.add_command(label="No models · open Settings", command=self.show_settings)
+        for item in entries:
+            prefix = "✓ " if item["active"] else ""
+            label = prefix + item["title"]
+            action = item.get("action")
+            if item["active"] or action is None:
+                self.model_menu.add_command(label=label, state="disabled")
+            elif action[0] == "Use":
+                _, command = action
+                self.model_menu.add_command(label=label, command=command)
+            elif action[0] == "Download":
+                _, command = action
+                self.model_menu.add_command(label=f"{label} · download", command=command)
+            else:
+                _, command = action
+                self.model_menu.add_command(label=f"{label} · add", command=command)
+        self.model_menu.add_separator()
+        self.model_menu.add_command(label="All model settings…", command=self.show_settings)
+        try:
+            x = self.model_picker.winfo_rootx()
+            y = self.model_picker.winfo_rooty() + self.model_picker.winfo_height()
+            self.model_menu.tk_popup(x, y)
+        finally:
+            self.model_menu.grab_release()
+
+    def compose_attach(self):
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=TEXT, activebackground=HOVER, activeforeground=TEXT)
+        menu.add_command(label="Manage folders…", command=self.manage_library)
+        menu.add_command(label="Model settings…", command=self.show_settings)
+        try:
+            x = self.compose_plus.winfo_rootx()
+            y = self.compose_plus.winfo_rooty() + self.compose_plus.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def sync_compose_bar(self):
+        compose = bool(self._input_at_bottom or self.uses_conversation_shell())
+        if compose == getattr(self, "_compose_bar", False):
+            self.refresh_model_picker()
+            return
+        self._compose_bar = compose
+        self.input_surface.set_compose(compose)
+        if compose:
+            self.search_icon.pack_forget()
+            self.compose_plus.pack(side="left", padx=(0, 2), before=self.entry)
+            self.model_picker.pack(side="right", padx=(6, 4), before=self.send_button)
+            hint = "Send follow-up" if self.scope == "Chat" else "Ask a follow-up"
+            self.placeholder.configure(text=hint)
+        else:
+            self.compose_plus.pack_forget()
+            self.model_picker.pack_forget()
+            self.search_icon.pack(side="left", padx=(0, 6), before=self.entry)
+            self.placeholder.configure(text="Ask anything..." if self.scope == "Chat" else "Ask your files...")
+        self.refresh_model_picker()
+        self.update_placeholder()
+
     def refresh_theme(self):
-        self.apply_theme(windows_palette())
+        shell = windows_palette()
+        dark = DEFAULT
+        self.apply_theme((dark[0], dark[1], dark[2], dark[3], shell[4], dark[5]))
         self.theme_timer = self.root.after(3000, self.refresh_theme)
 
     def apply_theme(self, colours):
@@ -808,7 +1224,8 @@ class LoftPreview:
         replacements = dict(zip(previous, colours))
         def recolour(widget):
             for option in ("background", "foreground", "activebackground", "activeforeground",
-                           "insertbackground", "highlightbackground", "highlightcolor"):
+                           "insertbackground", "highlightbackground", "highlightcolor",
+                           "disabledbackground", "disabledforeground", "readonlybackground"):
                 if option in widget.keys():
                     old = str(widget.cget(option))
                     if old in replacements:
@@ -818,8 +1235,173 @@ class LoftPreview:
         recolour(self.root)
         BG, PANEL, TEXT, MUTED, ACCENT, HOVER = colours
         self.canvas.configure(bg=BG)
-        self.input_surface.draw()
+        self.input_surface.set_outline(ACCENT)
+        if self.busy:
+            self.input_surface.set_busy(True)
+        else:
+            self.input_surface.set_busy(False)
         self.style_scopes()
+        self.sync_entry_style()
+        if self.busy:
+            self.input_surface.set_busy(False)
+
+    def library_summary(self):
+        if self.demo:
+            return "⬡  5 files · Sample"
+        return f"⬡  {self.engine.count()} files · On device"
+
+    def refresh_library_summary(self):
+        if hasattr(self, "library_label"):
+            self.library_label.configure(text=self.library_summary())
+
+    def section_row(self, parent, title, link_text=None, link_command=None):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(4, 8))
+        tk.Label(row, text=title, bg=BG, fg=TEXT, font=("Segoe UI", 11, "bold")).pack(side="left")
+        if link_text and link_command:
+            link = self.button(row, link_text, link_command, muted=True)
+            link.configure(fg=ACCENT, font=("Segoe UI", 9))
+            link.pack(side="right")
+
+    def quick_action_card(self, parent, icon, title, subtitle, command):
+        card = tk.Frame(parent, bg=CARD, padx=8, pady=6, cursor="hand2")
+        top = tk.Frame(card, bg=CARD)
+        top.pack(fill="x")
+        icon_label = tk.Label(top, text=icon, bg=CARD, fg=ACCENT, font=("Segoe UI", 11))
+        icon_label.pack(side="left", padx=(0, 6))
+        text_col = tk.Frame(top, bg=CARD)
+        text_col.pack(side="left", fill="x", expand=True)
+        title_label = tk.Label(text_col, text=title, bg=CARD, fg=TEXT, font=("Segoe UI", 9, "bold"), anchor="w")
+        title_label.pack(anchor="w")
+        sub_label = tk.Label(text_col, text=subtitle, bg=CARD, fg=MUTED, font=("Segoe UI", 8), anchor="w")
+        sub_label.pack(anchor="w")
+        for widget in (card, top, icon_label, text_col, title_label, sub_label):
+            widget.bind("<Button-1>", lambda _event: command())
+        return card
+
+    def accent_button(self, parent, text, command):
+        return tk.Button(parent, text=text, command=command, bg=ACCENT, fg=BG,
+                         activebackground=ACCENT, activeforeground=BG, relief="flat", bd=0,
+                         padx=10, pady=4, cursor="hand2", font=("Segoe UI", 9, "bold"),
+                         highlightthickness=0)
+
+    def ghost_button(self, parent, text, command):
+        return tk.Button(parent, text=text, command=command, bg=CARD, fg=ACCENT,
+                         activebackground=HOVER, activeforeground=ACCENT, relief="flat", bd=0,
+                         padx=10, pady=4, cursor="hand2", font=("Segoe UI", 9),
+                         highlightthickness=1, highlightbackground=HOVER, highlightcolor=ACCENT)
+
+    def model_entries(self, models_api):
+        try:
+            models = models_api.answer_models()
+            selected = models_api.selected_answer() if models else None
+        except (RuntimeError, KeyError, ValueError, OSError):
+            models, selected = [], None
+        installed = {model["file"]: model for model in models}
+        entries = []
+        for candidate in models_api.CATALOG:
+            title, description, info = candidate
+            filename = info[2]
+            active = bool(selected and selected["file"] == filename)
+            tags = []
+            if active:
+                tags.append("In use")
+            elif filename in installed:
+                tags.append("Ready")
+            else:
+                tags.extend(part.strip() for part in description.split("·"))
+            action = None
+            if active:
+                action = None
+            elif filename in installed:
+                action = ("Use", lambda f=filename: self.select_answer_model(f))
+            elif models_api.model_path(filename).is_file():
+                action = ("Add", lambda c=candidate: self.add_existing_model(c))
+            else:
+                action = ("Download", lambda c=candidate: self.download_model(c))
+            entries.append({"title": title, "tags": tags, "active": active, "action": action, "sort": 0 if active else 1})
+        for model in models:
+            if model["file"] in {item[2][2] for item in models_api.CATALOG}:
+                continue
+            title = model.get("title", model["file"])
+            active = bool(selected and selected["file"] == model["file"])
+            tags = ["In use"] if active else ["Ready"]
+            action = None if active else ("Use", lambda f=model["file"]: self.select_answer_model(f))
+            entries.append({"title": title, "tags": tags, "active": active, "action": action, "sort": 0 if active else 1})
+        entries.sort(key=lambda item: (item["sort"], item["title"]))
+        return entries
+
+    def present_embedding_card(self, parent, models_api):
+        embed = models_api.embedding_record() if hasattr(models_api, "embedding_record") else None
+        if not embed:
+            tk.Label(parent, text="File search embeddings are missing. Run setup_runtime.py before indexing.",
+                     bg=BG, fg=ERROR, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 8))
+            return
+        ready = models_api.model_path(embed["file"]).is_file()
+        shell = tk.Frame(parent, bg=BG)
+        shell.pack(fill="x", pady=(0, 10))
+        card = tk.Frame(shell, bg=CARD, highlightthickness=1, highlightbackground=HOVER)
+        card.pack(fill="x")
+        top = tk.Frame(card, bg=CARD)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(top, text="File search", bg=CARD, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(top, text="·", bg=CARD, fg=MUTED, font=("Segoe UI", 9)).pack(side="left", padx=4)
+        tk.Label(top, text="Nomic Embed v1.5", bg=CARD, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(side="left")
+        status = tk.Label(top, text="Ready" if ready else "Missing", bg="#1f3d2f" if ready else "#3d1f1f",
+                          fg=SUCCESS if ready else ERROR, font=("Segoe UI", 8), padx=6, pady=2)
+        status.pack(side="right")
+        tk.Label(card, text=embed["file"], bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                 anchor="w").pack(fill="x", padx=12, pady=(0, 10))
+
+    def model_card(self, parent, title, tags, active, action):
+        shell = tk.Frame(parent, bg=BG)
+        shell.pack(fill="x", pady=(0, 8))
+        border = ACCENT if active else HOVER
+        card = tk.Frame(shell, bg=CARD, highlightthickness=2 if active else 1, highlightbackground=border)
+        card.pack(fill="x")
+        header = tk.Frame(card, bg=CARD)
+        header.pack(fill="x", padx=12, pady=10)
+        tk.Label(header, text=title, bg=CARD, fg=TEXT, font=("Segoe UI", 11, "bold"), anchor="w").pack(side="left")
+        if active:
+            tk.Label(header, text="In use", bg="#1f3d2f", fg=SUCCESS,
+                     font=("Segoe UI", 8, "bold"), padx=8, pady=3).pack(side="right")
+        elif action:
+            label, command = action
+            (self.accent_button if label in {"Use", "Download"} else self.ghost_button)(header, label, command).pack(side="right")
+        visible_tags = [tag for tag in tags if tag != "In use"]
+        if visible_tags:
+            tag_row = tk.Frame(card, bg=CARD)
+            tag_row.pack(fill="x", padx=12, pady=(0, 10))
+            for tag in visible_tags:
+                badge = tk.Label(tag_row, text=tag, bg=HOVER, fg=MUTED, font=("Segoe UI", 8), padx=6, pady=2)
+                badge.pack(side="left", padx=(0, 6))
+
+    def present_model_catalog(self, parent, show_embedding=False):
+        if self.demo:
+            self.section_row(parent, "Models")
+            self.model_card(parent, "Qwen 2.5 · 1.5B", ("Suggested",), True, None)
+            self.model_card(parent, "Qwen 2.5 · 0.5B", ("Smallest", "Less reliable citations"), False, None)
+            return
+        models_api = getattr(self.engine, "models", None)
+        if models_api is None:
+            return
+        self.section_row(parent, "Models", "Add a GGUF model", self.import_model)
+        if not getattr(models_api, "manifest", None):
+            tk.Label(parent, text="Run setup_runtime.py to download local models.",
+                     bg=BG, fg=MUTED, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w")
+            return
+        if show_embedding:
+            self.present_embedding_card(parent, models_api)
+        for entry in self.model_entries(models_api):
+            self.model_card(parent, entry["title"], entry["tags"], entry["active"], entry["action"])
+        tk.Label(parent, text="Answers use the selected model. File search keeps a separate embedding model.",
+                 bg=BG, fg=MUTED, wraplength=480, justify="left", font=("Segoe UI", 8)).pack(anchor="w", pady=(2, 0))
+
+    def present_home_models(self):
+        self.present_model_catalog(self.results, show_embedding=False)
+
+    def present_model_settings(self):
+        self.present_model_catalog(self.results, show_embedding=True)
 
     def button(self, parent, text, command, muted=False):
         return tk.Button(parent, text=text, command=command, bg=parent.cget("bg"), fg=MUTED if muted else TEXT,
@@ -830,9 +1412,11 @@ class LoftPreview:
     def style_scopes(self):
         for name, button in self.scope_buttons.items():
             if name == self.scope:
-                button.configure(bg=ACCENT, fg=BG, activebackground=ACCENT, activeforeground=BG)
+                button.configure(bg=ACCENT, fg=BG, activebackground=ACCENT, activeforeground=BG,
+                                 font=("Segoe UI", 9, "bold"))
             else:
-                button.configure(bg=BG, fg=MUTED, activebackground=HOVER, activeforeground=TEXT)
+                button.configure(bg=CARD, fg=MUTED, activebackground=HOVER, activeforeground=TEXT,
+                                 font=("Segoe UI", 9))
 
     def focus_search(self):
         self.expand()
@@ -933,18 +1517,20 @@ class LoftPreview:
         apply_window_material(self.root, self.root.winfo_width(), self.root.winfo_height(), self.glass, self.opacity)
 
     def show_settings(self):
-        if self.busy:
+        if self.busy and self.job_kind != "chat":
             self.note_phase("Finish or stop the current operation before changing settings.")
             return
+        if self.busy and self.job_kind == "chat":
+            self.note_phase("Models apply to your next message · wait or press Stop to switch mid-reply.")
         if self.library_window and self.library_window.winfo_exists():
             self.library_window.destroy()
         if not self.expanded:
             self.expand()
-        self.clear_results()
+        self.reset_results_view()
+        self.in_settings = True
         self.status.configure(text="Settings", fg=TEXT)
         self.present_model_settings()
-        tk.Label(self.results, text="APPEARANCE", bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(14, 4))
+        self.section_row(self.results, "Appearance")
         appearance = tk.Frame(self.results, bg=BG)
         appearance.pack(fill="x", pady=(2, 0))
         self.button(appearance, "Glass", lambda: self.set_glass(True)).pack(side="left", padx=(0, 4))
@@ -965,70 +1551,27 @@ class LoftPreview:
         for index, screen in enumerate(monitors(), 1):
             label = f"Screen {index}" + (" · primary" if screen["primary"] else "")
             self.button(screens, label, lambda s=screen: self.move_to_screen(s), muted=True).pack(side="left", padx=(0, 4))
-        self.button(self.results, "← Back to search", self.show_welcome, muted=True).pack(anchor="w", pady=(8, 0))
+        self.button(self.results, "← Back", self.leave_settings, muted=True).pack(anchor="w", pady=(8, 0))
         self.fit_content()
+        self.sync_conversation_layout()
 
-    def present_model_settings(self):
-        if self.demo:
+    def leave_settings(self):
+        self.in_settings = False
+        if self.thread:
+            self.render_thread()
+            self.sync_status_strip()
             return
-        models_api = getattr(self.engine, "models", None)
-        if models_api is None:
+        if self.scope == "Chat" and self.chat_thread:
+            self.thread = list(self.chat_thread)
+            self.render_thread()
+            self.sync_status_strip()
             return
-        tk.Label(self.results, text="ANSWERS & SUMMARIES", bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(2, 4))
-        if not getattr(models_api, "manifest", None):
-            tk.Label(self.results, text="No local models yet. Run setup_runtime.py, then choose an answer model here.",
-                     bg=BG, fg=MUTED, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
-        else:
-            embed = models_api.embedding_record() if hasattr(models_api, "embedding_record") else None
-            if embed:
-                ready = models_api.model_path(embed["file"]).is_file()
-                detail = "ready" if ready else "missing — run setup_runtime.py"
-                tk.Label(self.results, text=f"File search embeddings · {embed['file']} · {detail}",
-                         bg=BG, fg=ACCENT if ready else ERROR, wraplength=480, justify="left",
-                         font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
-            else:
-                tk.Label(self.results, text="File search embeddings are missing. Run setup_runtime.py before indexing.",
-                         bg=BG, fg=ERROR, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
-        try:
-            models = models_api.answer_models()
-            selected = models_api.selected_answer() if models else None
-        except (RuntimeError, KeyError, ValueError, OSError):
-            models, selected = [], None
-        installed = {model["file"]: model for model in models}
-        for candidate in models_api.CATALOG:
-            title, description, info = candidate
-            filename = info[2]
-            row = tk.Frame(self.results, bg=PANEL)
-            row.pack(fill="x", pady=2)
-            detail = "In use" if selected and selected["file"] == filename else ("Downloaded" if filename in installed else description)
-            tk.Label(row, text=f"{title}  ·  {detail}", bg=PANEL, fg=TEXT,
-                     font=("Segoe UI", 10), anchor="w").pack(side="left", padx=9, pady=6)
-            if filename in installed:
-                if not (selected and selected["file"] == filename):
-                    self.button(row, "Use", lambda f=filename: self.select_answer_model(f)).pack(side="right", padx=5)
-            else:
-                exists = models_api.model_path(filename).is_file()
-                if exists:
-                    self.button(row, "Add local file",
-                                lambda c=candidate: self.add_existing_model(c)).pack(side="right", padx=5)
-                else:
-                    self.button(row, "Download",
-                                lambda c=candidate: self.download_model(c)).pack(side="right", padx=5)
-        for model in models:
-            if model["file"] in {candidate[2][2] for candidate in models_api.CATALOG}:
-                continue
-            row = tk.Frame(self.results, bg=PANEL)
-            row.pack(fill="x", pady=2)
-            title = model.get("title", model["file"])
-            detail = "In use" if selected and selected["file"] == model["file"] else "Downloaded"
-            tk.Label(row, text=f"{title}  ·  {detail}", bg=PANEL, fg=TEXT,
-                     font=("Segoe UI", 10), anchor="w").pack(side="left", padx=9, pady=6)
-            if detail != "In use":
-                self.button(row, "Use", lambda f=model["file"]: self.select_answer_model(f)).pack(side="right", padx=5)
-        self.button(self.results, "+ Add a GGUF model", self.import_model, muted=True).pack(anchor="w", pady=(4, 0))
-        tk.Label(self.results, text="Search uses a separate embedding model. Switching this model keeps your index.",
-                 bg=BG, fg=MUTED, wraplength=480, justify="left", font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        if self.file_thread:
+            self.thread = list(self.file_thread)
+            self.render_thread()
+            self.sync_status_strip()
+            return
+        self.show_welcome()
 
     def show_models(self):
         self.show_settings()
@@ -1070,7 +1613,10 @@ class LoftPreview:
 
     def select_answer_model(self, filename):
         if self.busy:
-            self.note_phase("An operation is running. Use Stop, then try again.")
+            if self.scope == "Chat":
+                self.note_phase("Wait for the reply or press Stop, then choose a model.")
+            else:
+                self.note_phase("An operation is running. Use Stop, then try again.")
             return
         try:
             self.engine.models.select_answer(filename)
@@ -1079,8 +1625,56 @@ class LoftPreview:
             self.phase_text = str(exc)
             self.status.configure(text=str(exc), fg=ERROR)
             return
-        self.show_settings()
+        if self.in_settings:
+            self.show_settings()
+        elif self.conversation_active() or self.thread or self.chat_thread or self.file_thread:
+            self.render_thread()
+            self.sync_conversation_layout()
+            self.sync_status_strip()
+            self.size_results_viewport()
+        else:
+            self.show_welcome()
         self.status.configure(text="Saved · this model will answer your next question.", fg=ACCENT)
+        self.refresh_model_picker()
+
+    def uses_conversation_shell(self):
+        return self.scope == "Chat" or bool(self.thread) or bool(self.pending_chat)
+
+    def conversation_active(self):
+        if not self.expanded or self.in_settings:
+            return False
+        return self.uses_conversation_shell()
+
+    def pin_window_height(self):
+        if self._pinned_height is not None:
+            return
+        screens = monitors()
+        home = next(screen for screen in screens if screen["primary"])
+        limit = home["bottom"] - home["top"] - 48
+        self._pinned_height = min(CONVERSATION_HEIGHT, max(520, limit))
+
+    def sync_conversation_layout(self):
+        if not self.expanded:
+            return
+        bottom = self.uses_conversation_shell() or (self.in_settings and self._input_at_bottom)
+        if bottom != self._input_at_bottom:
+            self._input_at_bottom = bottom
+            for widget in (self.input_surface, self.scopes, self.status_row, self.scroll_host, self.footer):
+                widget.pack_forget()
+            self.header.pack(fill="x")
+            if bottom:
+                self.scopes.pack(fill="x", pady=(8, 6))
+                self.status_row.pack(fill="x", pady=(0, 4))
+                self.scroll_host.pack(fill="both", expand=True)
+                self.input_surface.pack(fill="x", pady=(6, 8))
+                self.footer.pack(fill="x")
+            else:
+                self.input_surface.pack(fill="x", pady=(10, 8))
+                self.scopes.pack(fill="x", pady=(0, 8))
+                self.status_row.pack(fill="x", pady=(0, 4))
+                self.scroll_host.pack(fill="x")
+                self.footer.pack(fill="x", pady=(10, 0))
+        self.sync_compose_bar()
 
     def layout(self, width, height):
         screens = monitors()
@@ -1097,8 +1691,9 @@ class LoftPreview:
             width = min(width, 1200)
             height = min(height, 900)
         self.root.geometry(f"{int(width)}x{int(height)}+{int(x)}+{int(y)}")
+        body_h = max(1, int(height) - 42)
+        self.canvas.itemconfigure(self.body_id, width=int(width) - 48, height=body_h)
         self.canvas.configure(bg=BG)
-        self.canvas.itemconfigure(self.body_id, width=width-48, height=0)
         self.apply_material()
 
     def fit_content(self):
@@ -1110,17 +1705,48 @@ class LoftPreview:
         except tk.TclError:
             return
         self.cancel_animation()
+        if self.in_settings:
+            height = self._pinned_height or max(self.body.winfo_reqheight() + 42, 520)
+            self.layout(560, height)
+            self.finish_transition()
+            return
         self.canvas.itemconfigure(self.body_id, width=512)
         self.root.update_idletasks()
-        self.size_results_viewport()
-        self.root.update_idletasks()
-        self.layout(560, self.body.winfo_reqheight()+42)
+        if self.conversation_active():
+            self.pin_window_height()
+            self.sync_conversation_layout()
+            self.root.update_idletasks()
+            self.size_results_viewport()
+            self.layout(560, self._pinned_height)
+        else:
+            if self._input_at_bottom:
+                self._input_at_bottom = False
+                self.sync_conversation_layout()
+            self.size_results_viewport()
+            self.root.update_idletasks()
+            self.layout(560, self.body.winfo_reqheight() + 42)
         self.finish_transition()
 
     def size_results_viewport(self):
-        """Grow the results area with its content, and scroll once the screen is full."""
+        """Grow the results area with content, or fill a fixed panel during a conversation."""
         self.root.update_idletasks()
         inner = max(self.scroll_inner.winfo_reqheight(), 1)
+        width = max(self.scroll.winfo_width(), 480)
+        self.scroll.itemconfigure(self.scroll_window, width=width)
+        self.scroll.configure(scrollregion=(0, 0, width, inner))
+        if self.conversation_active():
+            self.body.update_idletasks()
+            host_h = max(self.scroll_host.winfo_height(), 140)
+            self.scroll.configure(height=host_h)
+            if self.thread:
+                if not self.vbar.winfo_ismapped():
+                    self.vbar.pack(side="right", fill="y")
+            elif inner > host_h + 2:
+                if not self.vbar.winfo_ismapped():
+                    self.vbar.pack(side="right", fill="y")
+            elif self.vbar.winfo_ismapped():
+                self.vbar.pack_forget()
+            return
         chrome = max(self.body.winfo_reqheight() - int(self.scroll.cget("height")), 0)
         screens = monitors()
         if self.origin is None:
@@ -1175,6 +1801,212 @@ class LoftPreview:
         if self.expanded:
             self.entry.focus_set()
 
+    def looks_like_status(self, text):
+        text = (text or "").strip()
+        return not text or any(text.startswith(prefix) for prefix in (
+            "Local answer", "Local chat", "Local reply", "Loading ", "Searching ", "Reading ",
+            "Ready ·", "An operation is running",
+        ))
+
+    def sync_status_strip(self):
+        """Keep long status lines out of the strip once the thread carries the story."""
+        if self.busy:
+            return
+        if self.thread or self.pending_chat:
+            if not self._status_error:
+                self.status.configure(text="", fg=MUTED)
+            return
+        if self.scope == "Chat" and not self.thread:
+            return
+
+    def chat_context(self):
+        turns = []
+        for turn in self.thread:
+            if turn["role"] in ("user", "assistant"):
+                turns.append({"role": turn["role"], "content": turn["text"]})
+        return turns[-6:]
+
+    def paint_bubble(self, parent, role, text, *, fg=None, bg=None):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(8 if role == "user" else 4, 2))
+        side = "e" if role == "user" else "w"
+        margin = (36, 10) if role == "user" else (10, 36)
+        wrap = tk.Frame(row, bg=BG)
+        wrap.pack(anchor=side, padx=margin)
+        bubble_bg = bg or (ACCENT if role == "user" else BUBBLE_ASSIST)
+        bubble_fg = fg or ("#ffffff" if role == "user" else TEXT)
+        pad = 14
+        font = ("Segoe UI", 11)
+        outer = tk.Canvas(wrap, bg=BG, highlightthickness=0, borderwidth=0, height=28, width=64)
+        outer.pack(anchor=side)
+        text_id = bubble_text_id(outer, text, pad, bubble_fg, font)
+
+        class BubbleHandle:
+            def __init__(self, canvas, tid, fill, app, padding):
+                self.canvas = canvas
+                self.text_id = tid
+                self.fill = fill
+                self.app = app
+                self.pad = padding
+
+            def winfo_exists(self):
+                try:
+                    return self.canvas.winfo_exists()
+                except tk.TclError:
+                    return False
+
+            def configure(self, *, text=None, fg=None):
+                if text is not None:
+                    self.canvas.itemconfigure(self.text_id, text=text)
+                if fg is not None:
+                    self.canvas.itemconfigure(self.text_id, fill=fg)
+                self._draw()
+
+            def _draw(self):
+                self.canvas.update_idletasks()
+                box = self.canvas.bbox(self.text_id)
+                if not box:
+                    return
+                x1, y1, x2, y2 = box
+                w = max(int(x2 - x1 + self.pad * 2), 32)
+                h = max(int(y2 - y1 + self.pad * 2), 24)
+                self.canvas.configure(width=w, height=h)
+                self.canvas.delete("bubble")
+                photo = smooth_round_photo(self.canvas, w, h, BUBBLE_RADIUS, self.fill)
+                if photo is not None:
+                    self.canvas._loft_photo = photo
+                    self.app._bubble_photos.append(photo)
+                    self.canvas.create_image(0, 0, anchor="nw", image=photo, tags="bubble")
+                else:
+                    canvas_round_rect(self.canvas, 0, 0, w, h, BUBBLE_RADIUS, self.fill, tags="bubble")
+                self.canvas.coords(self.text_id, self.pad, self.pad)
+                self.canvas.tag_raise(self.text_id)
+
+        handle = BubbleHandle(outer, text_id, bubble_bg, self, pad)
+        handle._draw()
+        return handle
+
+    def paint_sources(self, parent, hits, *, indent=True):
+        if not hits:
+            return
+        pad = (18, 0) if indent else (0, 0)
+        block = tk.Frame(parent, bg=BG)
+        block.pack(fill="x", pady=(0, 6), padx=pad)
+        self.sources_detail = block
+        self.sources_open = True
+        for hit in hits:
+            self.source_card(block, hit)
+
+    def reset_results_view(self):
+        self.answer_card = None
+        self.answer_text = None
+        self.support_note = None
+        self.answer_heading = None
+        self.answer_body = None
+        self.caution_frame = None
+        self.caution_label = None
+        self.sources_wrap = None
+        self.progress_track = None
+        self.answer_skeleton = None
+        self.live_assistant_label = None
+        previous = self.results
+        self.results = tk.Frame(self.scroll_inner, bg=BG, height=1)
+        self.results.pack(fill="x", before=previous)
+        previous.destroy()
+
+    def scroll_thread_to_end(self):
+        if not getattr(self, "scroll", None):
+            return
+        try:
+            self.root.update_idletasks()
+            self.scroll.yview_moveto(1)
+        except tk.TclError:
+            pass
+
+    def clear_results(self):
+        self.answer_buffer = ""
+        self.support_gaps = []
+        self.reset_results_view()
+
+    def render_thread(self):
+        self._bubble_photos = []
+        self.reset_results_view()
+        if self.scope == "Chat" and not self.thread and not self.pending_chat and not self.busy:
+            tk.Label(self.results, text="Ask anything — this chat is not grounded in your indexed files.",
+                     bg=BG, fg=MUTED, wraplength=460, justify="left", anchor="w",
+                     font=("Segoe UI", 10)).pack(anchor="w", pady=(8, 12))
+        for turn in self.thread[-10:]:
+            if turn["role"] == "assistant" and self.looks_like_status(turn.get("text", "")):
+                continue
+            if turn["role"] == "user":
+                self.paint_bubble(self.results, "user", turn["text"])
+            else:
+                group = tk.Frame(self.results, bg=BG)
+                group.pack(fill="x")
+                self.paint_bubble(group, "assistant", turn["text"])
+                if turn.get("hits"):
+                    self.paint_sources(group, turn["hits"])
+                if turn.get("gaps"):
+                    tk.Label(group, text=self.support_line_for(turn["gaps"]), bg=BG, fg=MUTED,
+                             wraplength=BUBBLE_WRAP + 40, justify="left", anchor="w",
+                             font=("Segoe UI", 9)).pack(anchor="w", padx=(18, 36), pady=(2, 6))
+        if self.scope == "Chat" and self.pending_chat:
+            self.paint_bubble(self.results, "user", self.pending_chat)
+        if self.busy and (self.job_kind == "ask" or (self.job_kind == "chat" and self.pending_chat)):
+            live = tk.Frame(self.results, bg=BG)
+            live.pack(fill="x")
+            assistant = self.answer_buffer.strip()
+            if not assistant:
+                assistant = self.phase_text if self.job_kind == "chat" else "Thinking…"
+            self.live_assistant_label = self.paint_bubble(
+                live, "assistant", assistant,
+                fg=MUTED if not self.answer_buffer.strip() else TEXT)
+            if self.last_hits and self.job_kind == "ask":
+                self.paint_sources(live, self.last_hits)
+            if self.support_gaps and self.live_assistant_label:
+                tk.Label(live, text=self.support_line(), bg=BG, fg=MUTED, wraplength=BUBBLE_WRAP + 40,
+                         justify="left", anchor="w", font=("Segoe UI", 9)).pack(anchor="w", padx=(18, 36), pady=(2, 4))
+        elif self.awaiting_empty_note and self.phase_text and not self.looks_like_status(self.phase_text):
+            self.paint_bubble(self.results, "assistant", self.phase_text, fg=MUTED)
+        if self.answer_buffer.strip() and self.busy:
+            self.button(self.results, "Read full answer", self.show_answer, muted=True).pack(anchor="w", padx=(18, 0), pady=(0, 6))
+        self.fit_content()
+        self.sync_status_strip()
+        self.sync_conversation_layout()
+        self.root.after_idle(self.scroll_thread_to_end)
+
+    def assistant_turn_text(self):
+        text = self.answer_buffer.strip()
+        if text and not self.looks_like_status(text):
+            return text
+        if self.awaiting_empty_note or self._status_error:
+            phase = (self.phase_text or "").strip()
+            if phase and not self.looks_like_status(phase):
+                return phase
+            return self.phase_text or "No matching files."
+        return ""
+
+    def finalize_file_turn(self):
+        note = self.assistant_turn_text()
+        if self.looks_like_status(note):
+            note = ""
+        if note or self.last_hits:
+            self.thread.append({
+                "role": "assistant",
+                "text": note or ("See the sources below." if self.last_hits else "No matching files."),
+                "hits": list(self.last_hits),
+                "gaps": list(self.support_gaps),
+            })
+        self.awaiting_empty_note = False
+        self.live_assistant_label = None
+        self.answer_card = None
+        self.answer_text = None
+        self.render_thread()
+        self.sync_status_strip()
+        if self.scope != "Chat":
+            self.file_thread = list(self.thread)
+        self.sync_conversation_layout()
+
     def transition(self, width, height):
         self.cancel_animation()
         if not self.motion_ready or not motion_enabled():
@@ -1203,28 +2035,19 @@ class LoftPreview:
         self.expanded = True
         self.canvas.itemconfigure(self.body_id, width=512)
         self.root.update_idletasks()
+        self.sync_conversation_layout()
         self.size_results_viewport()
         self.root.update_idletasks()
-        self.transition(560, self.body.winfo_reqheight()+42)
+        if self.conversation_active() and self._pinned_height:
+            target = self._pinned_height
+        else:
+            target = self.body.winfo_reqheight() + 42
+        self.transition(560, target)
         self.root.lift()
 
     def collapse(self):
         self.expanded = False
         self.transition(285, 48)
-
-    def clear_results(self):
-        # Recreate the container: Tk retains a frame's last requested height
-        # after its last packed child is removed, leaving an oversized void.
-        self.answer_card = None
-        self.answer_text = None
-        self.answer_buffer = ""
-        self.support_gaps = []
-        self.support_note = None
-        previous = self.results
-        self.results = tk.Frame(self.scroll_inner, bg=BG, height=1)
-        self.results.pack(fill="x", before=previous)
-        previous.destroy()
-        self.scroll.yview_moveto(0)
 
     def present_card(self, caption, text):
         card = tk.Frame(self.results, bg=HOVER, padx=12, pady=8)
@@ -1234,20 +2057,59 @@ class LoftPreview:
         self.mount_rich(card, text)
 
     def present_streaming(self):
-        self.answer_card = tk.Frame(self.results, bg=HOVER, padx=12, pady=8)
-        self.answer_card.pack(fill="x")
-        tk.Label(self.answer_card, text="Local answer", bg=HOVER, fg=ACCENT, anchor="w",
-                 font=("Segoe UI", 9)).pack(anchor="w")
+        self.answer_card = tk.Frame(self.results, bg=CARD, highlightthickness=1, highlightbackground=GLOW_SOFT)
+        self.answer_card.pack(fill="x", pady=(0, 6))
+        self.answer_heading = tk.Label(self.answer_card, text="Answer", bg=CARD, fg=TEXT, anchor="w",
+                                       font=("Segoe UI", 10, "bold"))
+        self.answer_heading.pack(anchor="w", padx=12, pady=(10, 0))
+        self.answer_body = tk.Frame(self.answer_card, bg=CARD)
+        self.answer_body.pack(fill="x", padx=12, pady=(4, 0))
         self.answer_buffer = ""
-        self.answer_text = tk.Label(self.answer_card, text="Writing an answer…", bg=HOVER, fg=TEXT, wraplength=460,
-                                     justify="left", anchor="w", font=("Segoe UI", 11), cursor="hand2")
-        self.answer_text.pack(anchor="w", fill="x", pady=(4, 0))
+        self.answer_text = tk.Label(self.answer_body, text="Writing an answer…", bg=CARD, fg=MUTED, wraplength=460,
+                                    justify="left", anchor="w", font=("Segoe UI", 11), cursor="hand2")
+        self.answer_text.pack(anchor="w", fill="x")
         self.answer_text.bind("<Button-1>", lambda _event: self.show_answer())
+        self.progress_track = tk.Canvas(self.answer_body, height=8, bg=CARD, highlightthickness=0)
+        self.progress_track.pack(fill="x", pady=(10, 6))
+        self.progress_track.bind("<Configure>", lambda _event: self.draw_answer_progress())
+        self.answer_skeleton = tk.Frame(self.answer_body, bg=CARD)
+        self.answer_skeleton.pack(fill="x", pady=(0, 4))
+        for width in (260, 200, 140):
+            bar = tk.Frame(self.answer_skeleton, bg=HOVER, height=7, width=width)
+            bar.pack(anchor="w", pady=3)
+
+    def ensure_caution_banner(self):
+        line = self.support_line()
+        if not line:
+            if self.caution_frame is not None and self.caution_frame.winfo_exists():
+                self.caution_frame.pack_forget()
+            return
+        if self.caution_frame is None or not self.caution_frame.winfo_exists():
+            self.caution_frame = tk.Frame(self.results, bg="#2a2218", highlightthickness=1,
+                                          highlightbackground="#5c4030")
+            tk.Label(self.caution_frame, text="!", bg="#2a2218", fg=ERROR,
+                     font=("Segoe UI", 10, "bold"), width=2).pack(side="left", padx=(8, 0), pady=8)
+            self.caution_label = tk.Label(self.caution_frame, text=line, bg="#2a2218", fg=ERROR, wraplength=440,
+                                            justify="left", anchor="w", font=("Segoe UI", 9))
+            self.caution_label.pack(side="left", fill="x", expand=True, padx=(4, 10), pady=8)
+        else:
+            self.caution_label.configure(text=line)
+        if self.sources_wrap is not None and self.sources_wrap.winfo_exists():
+            self.caution_frame.pack(fill="x", pady=(0, 6), before=self.sources_wrap)
+        elif self.answer_card is not None and self.answer_card.winfo_exists():
+            self.caution_frame.pack(fill="x", pady=(0, 6), after=self.answer_card)
 
     def support_line(self):
         if not self.support_gaps:
             return ""
-        return "Not in the cited passage: " + ", ".join(self.support_gaps)
+        return self.support_line_for(self.support_gaps)
+
+    def support_line_for(self, gaps):
+        if not gaps:
+            return ""
+        if len(gaps) > 4:
+            return f"Some terms aren’t supported by the cited passage ({len(gaps)} flagged)."
+        return "Not in the cited passage: " + ", ".join(gaps)
 
     def mark_unsupported(self, box, answer):
         if not self.support_gaps or not answer:
@@ -1262,21 +2124,17 @@ class LoftPreview:
         line = self.support_line()
         if not line:
             return
+        body = self.answer_body
         card = self.answer_card
-        if card is not None and card.winfo_exists():
-            children = card.winfo_children()
-            if children:
-                children[0].configure(text="Local answer · not fully supported", fg=ERROR)
+        if body is not None and body.winfo_exists():
             current = self.answer_text
             if isinstance(current, tk.Label) and current.winfo_exists():
                 current.destroy()
-                self.answer_text = self.mount_flagged_answer(card, self.answer_buffer)
-            if self.support_note is None or not self.support_note.winfo_exists():
-                self.support_note = tk.Label(card, text=line, bg=HOVER, fg=ERROR, wraplength=460,
-                                              justify="left", anchor="w", font=("Segoe UI", 9))
-                self.support_note.pack(anchor="w", fill="x", pady=(6, 0))
-            else:
-                self.support_note.configure(text=line)
+                self.answer_text = self.mount_flagged_answer(body, self.answer_buffer)
+        self.ensure_caution_banner()
+        if self.support_note is not None and self.support_note.winfo_exists():
+            self.support_note.destroy()
+            self.support_note = None
         window = self.answer_window
         if window is not None and window.winfo_exists() and getattr(self, "full_answer", None):
             window.title("Loft · Local answer · not fully supported")
@@ -1292,7 +2150,7 @@ class LoftPreview:
 
     def mount_flagged_answer(self, parent, answer):
         lines = max(1, answer.count("\n") + (len(answer) // 55) + 1)
-        box = tk.Text(parent, height=min(lines, 8), wrap="word", bg=HOVER, fg=TEXT, relief="flat",
+        box = tk.Text(parent, height=min(lines, 8), wrap="word", bg=CARD, fg=TEXT, relief="flat",
                       font=("Segoe UI", 11), highlightthickness=0, takefocus=0, cursor="hand2", padx=0, pady=0)
         box.pack(anchor="w", fill="x", pady=(4, 0))
         box.insert("1.0", answer)
@@ -1303,12 +2161,12 @@ class LoftPreview:
 
     def finish_answer(self):
         card = self.answer_card
-        if not self.answer_buffer or card is None or not card.winfo_exists():
+        if card is None or not card.winfo_exists() or not self.answer_buffer:
             return
         if "```" in self.answer_buffer:
-            for child in list(card.winfo_children())[1:]:
+            for child in list(self.answer_body.winfo_children()):
                 child.destroy()
-            self.mount_rich(card, self.answer_buffer)
+            self.mount_rich(self.answer_body, self.answer_buffer)
             self.answer_text = None
             self.support_note = None
         self.show_support_flag()
@@ -1330,28 +2188,89 @@ class LoftPreview:
         return chunks or [("text", text)]
 
     def mount_rich(self, parent, text):
+        surface = parent.cget("bg")
         for kind, *rest in self.parts(text):
             if kind == "text":
                 body = rest[0].strip()
                 if body:
-                    tk.Label(parent, text=body, bg=HOVER, fg=TEXT, wraplength=460, justify="left",
+                    tk.Label(parent, text=body, bg=surface, fg=TEXT, wraplength=460, justify="left",
                              anchor="w", font=("Segoe UI", 11)).pack(anchor="w", fill="x", pady=(4, 0))
             else:
                 self.add_code_block(parent, rest[0], rest[1])
 
+    def source_preview(self, parent, hit):
+        text = hit["text"].strip()
+        path = Path(hit["path"])
+        if path.suffix.lower() in CODE or re.match(r"\s*(def |class |import |#|//)", text):
+            self.add_code_block(parent, text, path.suffix.lstrip(".") or "code")
+            return
+        preview = text if len(text) <= 320 else text[:317] + "…"
+        tk.Label(parent, text=preview, bg=BG, fg=MUTED, wraplength=460, justify="left",
+                 anchor="w", font=("Segoe UI", 9)).pack(anchor="w")
+
+    def source_card(self, parent, hit):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(2, 0))
+        tk.Label(row, text=hit["citation"], bg=ACCENT, fg=BG, font=("Segoe UI", 7, "bold"),
+                 padx=4, pady=1).pack(side="left", padx=(12, 0))
+        tk.Label(row, text=Path(hit["path"]).name, bg=BG, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
+        tk.Label(row, text=f"· {hit['start']}–{hit['end']}", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+        actions = tk.Frame(row, bg=BG)
+        actions.pack(side="right", padx=(0, 12))
+        preview_body = tk.Frame(row, bg=BG)
+        shown = {"open": False}
+
+        def toggle_preview(button):
+            if shown["open"]:
+                preview_body.pack_forget()
+                shown["open"] = False
+                button.configure(text="Show me")
+            else:
+                preview_body.pack(fill="x", padx=(36, 12), pady=(4, 2))
+                shown["open"] = True
+                button.configure(text="Hide")
+            self.fit_content()
+            self.root.after_idle(self.scroll_thread_to_end)
+
+        show = self.button(actions, "Show me", lambda: None, muted=True)
+        show.configure(command=lambda: toggle_preview(show))
+        show.pack(side="left", padx=(0, 6))
+        self.button(actions, "Open", lambda h=hit: self.open_source(h), muted=True).pack(side="left")
+        self.source_preview(preview_body, hit)
+
+    def present_sources(self, hits):
+        self.sources_open = True
+        self.sources_wrap = tk.Frame(self.results, bg=BG)
+        self.sources_wrap.pack(fill="x", pady=(0, 4))
+        header = tk.Frame(self.sources_wrap, bg=BG)
+        header.pack(fill="x")
+        tk.Label(header, text="Sources", bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Label(header, text=str(len(hits)), bg=HOVER, fg=MUTED, font=("Segoe UI", 8),
+                 padx=6, pady=1).pack(side="left", padx=(6, 0))
+        self.sources_toggle = self.button(header, "Hide", self.toggle_sources, muted=True)
+        self.sources_toggle.pack(side="right")
+        self.sources_detail = tk.Frame(self.sources_wrap, bg=BG)
+        self.sources_detail.pack(fill="x", pady=(6, 0))
+        for hit in hits:
+            self.source_card(self.sources_detail, hit)
+        if self.support_gaps:
+            self.ensure_caution_banner()
+
     def add_code_block(self, parent, code, language):
         code = code.strip("\n")
-        block = tk.Frame(parent, bg=PANEL)
+        block = tk.Frame(parent, bg=CARD)
         block.pack(fill="x", pady=(6, 0))
-        bar = tk.Frame(block, bg=PANEL)
+        bar = tk.Frame(block, bg=CARD)
         bar.pack(fill="x")
-        tk.Label(bar, text=language or "code", bg=PANEL, fg=MUTED,
+        tk.Label(bar, text=language or "code", bg=CARD, fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
         copy = self.button(bar, "Copy", lambda: None, muted=True)
         copy.configure(command=lambda c=code, b=copy: self.copy_code(c, b))
         copy.pack(side="right")
         lines = code.splitlines() or [""]
-        box = tk.Text(block, height=min(len(lines), 6), width=48, bg=PANEL, fg=TEXT, relief="flat",
+        box = tk.Text(block, height=min(len(lines), 6), width=48, bg=BG, fg=TEXT, relief="flat",
                       bd=0, padx=8, pady=4, wrap="word", font=("Consolas", 10),
                       takefocus=0, highlightthickness=0)
         box.pack(fill="x", padx=8, pady=(0, 6))
@@ -1383,53 +2302,73 @@ class LoftPreview:
         button.configure(text="Copied")
         self.root.after(1200, lambda: button.configure(text="Copy") if button.winfo_exists() else None)
 
-    def present_sources(self, hits):
-        self.sources_open = False
-        wrap = tk.Frame(self.results, bg=BG)
-        wrap.pack(fill="x", pady=(6, 0))
-        self.sources_toggle = self.button(wrap, f"Sources · {len(hits)}  ▾", self.toggle_sources, muted=True)
-        self.sources_toggle.pack(anchor="w")
-        chips = tk.Frame(wrap, bg=BG)
-        chips.pack(fill="x")
-        for hit in hits:
-            self.button(chips, f"[{hit['citation']}] {Path(hit['path']).name}",
-                        lambda h=hit: self.open_source(h), muted=True).pack(side="left", padx=(0, 2))
-        self.sources_detail = tk.Frame(wrap, bg=BG)
-        for hit in hits:
-            excerpt = hit["text"] if len(hit["text"]) <= 160 else hit["text"][:157] + "…"
-            tk.Label(self.sources_detail, text=f"[{hit['citation']}]  {excerpt}", bg=BG, fg=MUTED,
-                     wraplength=470, justify="left", anchor="w", font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
-        if not self.demo:
-            self.sources_open = True
-            self.sources_detail.pack(fill="x", pady=(2, 0))
-            self.sources_toggle.configure(text=f"Sources · {len(hits)}  ▴")
-
     def toggle_sources(self):
         self.sources_open = not self.sources_open
-        count = len(self.last_hits)
         if self.sources_open:
-            self.sources_detail.pack(fill="x", pady=(2, 0))
-            self.sources_toggle.configure(text=f"Sources · {count}  ▴")
+            self.sources_detail.pack(fill="x", pady=(6, 0))
+            self.sources_toggle.configure(text="Hide")
         else:
             self.sources_detail.pack_forget()
-            self.sources_toggle.configure(text=f"Sources · {count}  ▾")
+            self.sources_toggle.configure(text=f"Show {len(self.last_hits)}")
         self.fit_content()
 
     def show_welcome(self):
+        self.in_settings = False
+        self._pinned_height = None
+        self._input_at_bottom = False
+        self.thread = []
+        self.file_thread = []
+        self.chat_thread = []
         self.clear_results()
         if not self.demo:
             self._status_error = False
-            self.status.configure(text="Your files, ready when you are." if self.engine.count() else "Start with a folder of your own.", fg=MUTED)
-            self.button(self.results, "Choose folders ↗", self.manage_library).pack(anchor="w", pady=8)
+            self.status.configure(
+                text="Your files, ready when you are." if self.engine.count() else "Add a folder to get started.",
+                fg=MUTED)
+        else:
+            self.status.configure(text="Try a sample question or pick a quick action.", fg=MUTED)
+        self.section_row(self.results, "Quick Actions")
+        grid = tk.Frame(self.results, bg=BG)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+        actions = [
+            ("📄", "Summarise", "Get a quick summary",
+             lambda: self.quick_prompt("Summarise ", "Documents")),
+            ("</>", "Explain code", "Ask about functions",
+             lambda: self.quick_prompt("Explain ", "Code")),
+            ("🔎", "Search files", "Find in your files",
+             lambda: self.quick_prompt("", "All")),
+            ("📁", "Explore folders", "Browse and understand", self.manage_library),
+        ]
+        if self.demo:
+            actions[0] = ("📄", "Summarise", "Get a quick summary",
+                          lambda: self.ask("Summarise the parking receipt."))
+            actions[1] = ("</>", "Explain code", "Ask about functions",
+                          lambda: self.ask("Where is login handled?"))
+            actions[2] = ("🔎", "Search files", "Find in your files",
+                          lambda: self.ask("Have I paid for parking today?"))
+            actions[3] = ("📁", "Explore folders", "Browse sample files",
+                          lambda: self.ask("Find the invoice for my laptop."))
+        for index, (icon, title, subtitle, command) in enumerate(actions):
+            card = self.quick_action_card(grid, icon, title, subtitle, command)
+            card.grid(row=index // 2, column=index % 2, sticky="nsew",
+                      padx=(0 if index % 2 == 0 else 3, 3 if index % 2 == 0 else 0),
+                      pady=(0, 4))
+        self.present_home_models()
+        self.fit_content()
+
+    def quick_prompt(self, prefix, scope):
+        if self.busy and not self.demo:
+            self.note_phase("An operation is running. Use Stop, then try again.")
             return
-        self.status.configure(text="A place to start")
-        for label, question in (("Parking receipt", "Have I paid for parking today?"),
-                                ("Laptop invoice", "Find the invoice for my laptop."),
-                                ("Login code", "Where is login handled?")):
-            row = tk.Frame(self.results, bg=BG)
-            row.pack(fill="x", pady=2)
-            self.button(row, label, lambda q=question: self.ask(q)).pack(side="left")
-            self.button(row, "↗", lambda q=question: self.ask(q), muted=True).pack(side="right")
+        self.question.set("")
+        self.select_scope(scope)
+        self.question.set(prefix)
+        self.entry.focus_set()
+        self.update_placeholder()
+        if prefix:
+            self.entry.icursor("end")
 
     def ask(self, question):
         self.question.set(question)
@@ -1441,18 +2380,30 @@ class LoftPreview:
         if self.busy and not self.demo:
             self.note_phase("An operation is running. Use Stop, then change mode.")
             return
+        previous = self.scope
         self.scope = scope
         self.style_scopes()
-        self.placeholder.configure(text="Ask anything…" if scope == "Chat" else "Ask your files…")
-        # Chat loads a model. Don't send just because the tab was clicked.
+        self.placeholder.configure(text="Ask anything..." if scope == "Chat" else "Ask your files...")
         if scope == "Chat":
+            if previous != "Chat":
+                self.file_thread = list(self.thread)
+            self.thread = list(self.chat_thread)
             self._status_error = False
             self.pending_chat = ""
-            self.clear_results()
-            self.render_chat_transcript()
+            self.answer_buffer = ""
+            self.pin_window_height()
+            self.sync_conversation_layout()
+            self.render_thread()
             self.note_phase("Chat doesn't use your files. Press Enter to send.")
             self.fit_content()
+            self.sync_compose_bar()
             return
+        if previous == "Chat":
+            self.chat_thread = list(self.thread)
+            self.thread = list(self.file_thread)
+            self.render_thread()
+            self.fit_content()
+            self.sync_compose_bar()
         if self.question.get().strip():
             self.search()
 
@@ -1467,15 +2418,23 @@ class LoftPreview:
                 return
             if self.answer_window and self.answer_window.winfo_exists():
                 self.answer_window.destroy()
-            self.clear_results()
             scope = self.scope
             if scope == "Chat":
                 self.pending_chat = question
-                self.render_chat_transcript()
-                history = [dict(turn) for turn in self.chat_history]
+                self.question.set("")
+                self.update_placeholder()
+                self.render_thread()
+                history = self.chat_context()
                 operation = lambda cancel, emit, history=history: self.engine.chat_question(question, cancel, emit, history)
                 kind, phase = "chat", "Loading the answer model…"
             else:
+                self.thread.append({"role": "user", "text": question})
+                self.question.set("")
+                self.update_placeholder()
+                self.answer_buffer = ""
+                self.last_hits = []
+                self.support_gaps = []
+                self.render_thread()
                 operation = lambda cancel, emit: self.engine.ask(question, scope, cancel, emit)
                 kind, phase = "ask", "Loading the search model…"
             if self.start_job(operation, kind=kind):
@@ -1582,6 +2541,7 @@ class LoftPreview:
         if self.event_timer is not None:
             self.root.after_cancel(self.event_timer)
         self.cancel_animation()
+        self.stop_busy_fx()
         if self.theme_timer is not None:
             self.root.after_cancel(self.theme_timer)
         if self.watcher is not None:
@@ -1599,6 +2559,7 @@ def main():
     parser.add_argument("--expanded", action="store_true")
     parser.add_argument("--demo", action="store_true", help="Use invented fixtures instead of your library")
     args = parser.parse_args()
+    enable_dpi_awareness()
     root = tk.Tk()
     app = LoftPreview(root, demo=args.demo or args.check, use_settings=not args.check)
     if args.expanded:
@@ -1614,7 +2575,7 @@ def main():
         app.ask("parking")
         root.update()
         assert app.last_hits[0]["path"] == "parking.txt"
-        assert root.winfo_height() < 450, "Single result must not leave a large empty panel"
+        assert root.winfo_height() < 520, "Single result must not leave a large empty panel"
         assert app.body.winfo_height() >= app.body.winfo_reqheight(), "Content is clipped"
         app.open_source(app.last_hits[0])
         root.update()
