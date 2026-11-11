@@ -1,0 +1,56 @@
+[package]
+name = "loft"
+version = "0.1.0"
+description = "Loft — a local RAG notch app over your folders, powered by llama.cpp."
+authors = ["you"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "loft_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+tauri-plugin-autostart = "2"                   # launch at login
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "sync", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
+sqlite-vec = "0.1"
+
+# Indexing (M4)
+notify = "8"                                   # file-system watching
+blake3 = "1"                                   # content hashing for incremental indexing
+ignore = "0.4"                                 # directory walk that honours .gitignore
+calamine = "0.38"                              # xlsx / xls / ods
+zip = { version = "2", default-features = false, features = ["deflate"] }  # docx / pptx containers
+quick-xml = "0.37"                             # docx / pptx XML
+pdf-extract = "0.12"                           # PDF text
+sha2 = "0.10"                                  # verify downloaded models
+
+[target.'cfg(windows)'.dependencies]
+# Job object so llama-server processes die with the app.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell"] }
+# Windows' own OCR engine and PDF renderer, for images and scanned PDF pages
+# (the same `windows` crate Tauri already builds).
+windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Security_Cryptography", "Storage_Streams"] }
+
+# Hashing a 2 GB model in an unoptimised debug build takes minutes.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+# NOTE: no `panic = "abort"` — the PDF parser can panic on malformed files and
+# we contain that with catch_unwind so one bad file can't take the app down.
+strip = true

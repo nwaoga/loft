@@ -1,0 +1,10 @@
+Kickoff meeting - 14 January
+
+Decisions
+- Points are earned at one point per pound spent, rounded down.
+- A free hot drink costs 60 points.
+- Staff discounts do not earn points.
+
+Open questions
+- Should points expire? Leaning towards 12 months of inactivity.
+- Can the till print the points balance on every receipt?
