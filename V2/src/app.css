@@ -1,0 +1,249 @@
+/* ============================================================
+   Loft — notch app styling
+   The Tauri window is transparent; only the notch element paints.
+   In a plain browser (no Tauri) we add .preview to <html> so the
+   notch sits against a desktop-like backdrop for previewing.
+
+   The notch is a solid colour, like the hardware notch it imitates.
+   (A see-through panel needs the desktop blurred behind it, which a
+   transparent window cannot do on Windows, so it just looks washed out.)
+
+   Colours are theme variables. "Midnight" below is the default; the other
+   themes override the same variables under [data-theme="…"], which is set on
+   <html> (see lib/theme.svelte.ts) and on the previews in Settings.
+   ============================================================ */
+
+:root,
+[data-theme="midnight"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --notch: #000;
+  --notch-border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --field-bg: rgba(255, 255, 255, 0.055);
+  --field-bg-focus: rgba(255, 255, 255, 0.07);
+  --field-bg-hover: rgba(255, 255, 255, 0.1);
+  --raised: rgba(255, 255, 255, 0.13); /* the selected segment, pressed buttons */
+  --raised-hover: rgba(255, 255, 255, 0.16);
+  --scroll-thumb: rgba(255, 255, 255, 0.16);
+
+  /* Text */
+  --text: rgba(255, 255, 255, 0.94);
+  --text-dim: rgba(255, 255, 255, 0.62);
+  --text-faint: rgba(255, 255, 255, 0.4);
+
+  /* Colour */
+  --accent: #7c8cff;
+  --accent-2: #b07cff;
+  --good: #3ddc84;
+  --warn: #ffb648;
+  --bad: #ff6470;
+  --stop-bg: rgba(255, 255, 255, 0.92); /* the Stop button */
+  --stop-fg: #000;
+
+  /* File-type tags on sources */
+  --tone-red: #ff7a7a;
+  --tone-blue: #6eb0ff;
+  --tone-green: #5fd38d;
+  --tone-orange: #ffa860;
+  --tone-violet: #b49bff;
+  --tone-grey: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="graphite"] {
+  --notch: #1d1f23;
+  --notch-border: rgba(255, 255, 255, 0.1);
+  --accent: #3fd0bf;
+  --accent-2: #5aa2ff;
+}
+
+[data-theme="ember"] {
+  --notch: #17100d;
+  --notch-border: rgba(255, 236, 220, 0.1);
+  --field-bg: rgba(255, 236, 220, 0.06);
+  --field-bg-focus: rgba(255, 236, 220, 0.08);
+  --field-bg-hover: rgba(255, 236, 220, 0.11);
+  --raised: rgba(255, 236, 220, 0.14);
+  --raised-hover: rgba(255, 236, 220, 0.18);
+  --text: rgba(255, 246, 238, 0.94);
+  --text-dim: rgba(255, 240, 228, 0.64);
+  --text-faint: rgba(255, 236, 220, 0.42);
+  --accent: #ff9a52;
+  --accent-2: #ff6b8b;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --notch: #f4f4f7;
+  --notch-border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --field-bg: rgba(0, 0, 0, 0.045);
+  --field-bg-focus: rgba(0, 0, 0, 0.03);
+  --field-bg-hover: rgba(0, 0, 0, 0.08);
+  --raised: #fff;
+  --raised-hover: rgba(0, 0, 0, 0.12);
+  --scroll-thumb: rgba(0, 0, 0, 0.22);
+
+  --text: rgba(0, 0, 0, 0.88);
+  --text-dim: rgba(0, 0, 0, 0.62);
+  --text-faint: rgba(0, 0, 0, 0.45);
+
+  --accent: #4f5fe8;
+  --accent-2: #9250e6;
+  --good: #1a9c52;
+  --warn: #b86e00;
+  --bad: #d92d43;
+  --stop-bg: rgba(0, 0, 0, 0.86);
+  --stop-fg: #fff;
+
+  --tone-red: #c93535;
+  --tone-blue: #1f6fd0;
+  --tone-green: #1b8a4c;
+  --tone-orange: #b8620a;
+  --tone-violet: #6b4fd0;
+  --tone-grey: rgba(0, 0, 0, 0.6);
+}
+
+/* (Declared wherever a theme is set, so it is built from that theme's accents.) */
+:root,
+[data-theme] {
+  --accent-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+:root {
+
+  /* Shape. The shadow must fit inside the window's transparent margin
+     (see COLLAPSED_SIZE / EXPANDED_SIZE in src-tauri/src/lib.rs), or it is
+     cut off in a visible rectangle. */
+  --notch-shadow: 0 12px 28px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --pill-shadow: 0 5px 14px rgba(0, 0, 0, 0.3);
+  --radius-pill: 15px;
+  --radius-panel: 26px;
+  --ear: 11px; /* the concave corners where the notch meets the screen edge */
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto,
+    system-ui, sans-serif;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring: cubic-bezier(0.3, 1.25, 0.4, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Browser-preview backdrop so the notch is visible without Tauri */
+html.preview body {
+  background: radial-gradient(1200px 800px at 50% -10%, #6f8dff, #5a55d6 45%, #2a2150 100%);
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  font-family: inherit;
+  color: var(--text);
+  background: var(--field-bg);
+  border: 1px solid var(--notch-border);
+  outline: none;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+/* Shared bits used by more than one tab */
+.section-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-faint);
+}
+.card {
+  background: var(--field-bg);
+  border: 1px solid var(--notch-border);
+  border-radius: 14px;
+}
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: var(--text-faint);
+  transition:
+    background 0.13s ease,
+    color 0.13s ease;
+}
+.icon-btn:hover {
+  background: var(--field-bg-hover);
+  color: var(--text);
+}
+.progress {
+  height: 4px;
+  background: var(--field-bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress > div {
+  height: 100%;
+  background: var(--accent-grad);
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+
+/* Thin scrollbars inside the panel */
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 8px;
+  border: 2px solid var(--notch);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
