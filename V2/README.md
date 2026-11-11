@@ -125,6 +125,9 @@ Notch UI (Svelte + Vite)  ──IPC──►  Rust core (Tauri 2)
 Two local `llama-server` processes: one for chat, one dedicated to embeddings (embedding models
 are pooling-based and don't reliably share a process with chat).
 
+[ARCHITECTURE.md](ARCHITECTURE.md) has the full picture: the code map, the data, the main flows
+and the reasons behind the design.
+
 ## Prerequisites
 
 | Tool | Notes |
