@@ -5,6 +5,21 @@
   const invoke = window.__TAURI__.core.invoke;
   const log = (msg) => invoke("dev_log", { msg: String(msg) });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // This window is driven by a test. Say so on it: it sits where the user's
+  // own Loft would be, and a question typed into it both gets a useless
+  // answer (it only knows the sample folder) and stops the test's own.
+  document.head.appendChild(
+    Object.assign(document.createElement("style"), {
+      textContent: `
+        .pill .hint { display: none; }
+        .pill .brand::after { content: " · TEST RUN, not your Loft"; font-weight: 600; color: #ffb648; }
+        .panel::before {
+          content: "Automated test in progress. This is not your Loft: please don't type here.";
+          flex: none; padding: 5px 14px; font-size: 11px; font-weight: 600; text-align: center;
+          color: #1a1205; background: #ffb648;
+        }`,
+    }),
+  );
   const $ = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => [...root.querySelectorAll(s)];
   const text = (el) => (el ? el.innerText.replace(/\s+/g, " ").trim() : "(none)");
@@ -88,6 +103,44 @@
     },
     saved: () => JSON.parse(localStorage.getItem("loft.chatOptions") || "{}"),
   };
+  // Chat history: the saved conversations, and the panel that lists them.
+  const chats = (query = null) => invoke("list_conversations", { query });
+  const saved = (id) => invoke("get_conversation", { id });
+  const convs = {
+    open: async () => {
+      if (!$(".history")) $(".bar-btn").click();
+      await waitFor(() => $(".history .list"), 3000, "the conversations panel");
+      await sleep(400);
+    },
+    close: async () => {
+      if ($(".history")) $('.history [aria-label="Back to the conversation"]').click();
+      await sleep(250);
+    },
+    titles: () => $$(".history .conv-title").map(text),
+    row: (title) => $$(".history .conv").find((r) => text($(".conv-title", r)) === title) ?? (() => { throw new Error(`"${title}" is not in the conversations list: ${$$(".history .conv-title").map(text).join(" | ")}`); })(),
+    search: async (q) => {
+      const box = $(".history .search input");
+      box.value = q;
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(600);
+    },
+    resume: async (title) => {
+      await convs.open();
+      $(".conv-open", convs.row(title)).click();
+      await waitFor(() => !$(".history"), 4000, `"${title}" to open`);
+      await sleep(350);
+    },
+    menu: async (title, item) => {
+      await convs.open();
+      const row = convs.row(title);
+      $(".conv-more", row).click();
+      await sleep(150);
+      $$(".conv-menu button", row).find((b) => text(b) === item).click();
+      await sleep(200);
+      return row;
+    },
+  };
+  const key = (name) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
   const words = (t) => t.split(/\s+/).filter(Boolean).length;
   const folderLine = () =>
     $$(".folder").map((f) => `${text($(".name", f))} [${text($(".status", f))}]`).join("; ") || "(no folders)";
@@ -186,8 +239,13 @@
       $(".new-chat").click();
       await sleep(300);
     };
-    await scanCheck("3f picture of a delivery note", "Which days does BeanWorks deliver to Harbour Cafe?", ["Tuesday", "Friday"], "delivery-note.png");
-    await scanCheck("3g scanned PDF", "How much written notice is needed to end the Quayside lease?", ["90"], "lease-letter-scan.pdf");
+    // (Text in pictures is read by Windows' own OCR engine; other systems index no text for these yet.)
+    if (navigator.userAgent.includes("Windows")) {
+      await scanCheck("3f picture of a delivery note", "Which days does BeanWorks deliver to Harbour Cafe?", ["Tuesday", "Friday"], "delivery-note.png");
+      await scanCheck("3g scanned PDF", "How much written notice is needed to end the Quayside lease?", ["90"], "lease-letter-scan.pdf");
+    } else {
+      await log("3f, 3g skipped | reading text in pictures and scanned PDFs (OCR) is Windows-only for now");
+    }
 
     // --- Chat & Answers options: each one changes what it says it changes
     await options.open();
@@ -293,17 +351,25 @@
     await log(`3n streaming off | arrived whole: ${reply.slice(0, 100)}`);
     await options.toggle("Stream responses", true);
 
-    // Chat history: saved locally, then not kept at all.
-    await options.radio("Save locally");
-    await options.close();
-    await sleep(300);
-    const kept = JSON.parse(localStorage.getItem("loft.chat") || "[]").length;
-    if (kept !== $$(".turn").length || kept === 0) throw new Error(`Save locally kept ${kept} of ${$$(".turn").length} turns`);
+    // Chat history option: "Current session only" keeps a new conversation
+    // out of the history; "Save locally" (the default) puts it there.
+    const total3o = (await chats()).total;
     await options.radio("Current session only");
     await options.close();
-    await sleep(200);
-    if (localStorage.getItem("loft.chat") !== null) throw new Error("the saved conversation should be removed when history is no longer saved");
-    await log(`3o chat history | saved locally: ${kept} turns | removed again when switched back`);
+    $(".new-chat").click();
+    await sleep(300);
+    await askAndWait("When does the pilot start?");
+    const unsavedBar = text($(".chat-title"));
+    const unsavedTotal = (await chats()).total;
+    if (unsavedTotal !== total3o || unsavedBar !== "Not being saved") throw new Error(`"Current session only" still saved the conversation: ${unsavedTotal} vs ${total3o}, bar "${unsavedBar}"`);
+    await options.radio("Save locally");
+    await options.close();
+    $(".new-chat").click();
+    await sleep(300);
+    await askAndWait("When does the pilot start?");
+    const savedTotal = (await chats()).total;
+    if (savedTotal !== total3o + 1 || text($(".chat-title")) !== "When does the pilot start") throw new Error(`"Save locally" did not save the conversation: ${savedTotal} vs ${total3o}, bar "${text($(".chat-title"))}"`);
+    await log(`3o chat history option | current session only: not saved (bar says "${unsavedBar}") | save locally: saved as "${text($(".chat-title"))}"`);
 
     // Advanced, then Reset puts everything back.
     await options.open();
@@ -326,6 +392,146 @@
     $(".new-chat").click();
     await sleep(300);
 
+    // --- Chat history: conversations are kept, listed, resumed, searched,
+    // renamed and deleted, all inside the panel as it is.
+    const dpr0 = window.devicePixelRatio;
+    const totalBefore = (await chats()).total;
+    if (text($(".chat-title")) !== "New conversation" || $(".new-chat")) throw new Error(`a fresh chat should have no name and no New chat button: "${text($(".chat-bar"))}"`);
+    await askAndWait("When does the pilot start?");
+    const titleA = text($(".chat-title"));
+    await askAndWait("Where?");
+    if (!text($(".turn.last .answer")).includes("Quayside")) throw new Error(`the follow-up was not understood: ${text($(".turn.last .answer"))}`);
+    $(".new-chat").click();
+    await sleep(300);
+    await askAndWait("Who owns the supplier contract?");
+    const titleB = text($(".chat-title"));
+    if (titleA !== "When does the pilot start" || titleB !== "Who owns the supplier contract") throw new Error(`unexpected titles: "${titleA}", "${titleB}"`);
+    if ((await chats()).total !== totalBefore + 2) throw new Error("two conversations should have been saved");
+
+    $(".chat-title").click(); // the title opens the history too
+    await waitFor(() => $(".history .list"), 3000, "the conversations panel");
+    await sleep(400);
+    let panel = await log(
+      `3q history panel | groups: ${$$(".history .group-label").map(text).join(", ")} | first rows: ${convs.titles().slice(0, 3).join(" / ")} | open now: ${text($(".history .conv.active .conv-title"))} | ${text($(".history footer"))}`,
+    );
+    if (panel[0] !== Math.round(540 * dpr0) || panel[1] !== Math.round(580 * dpr0)) throw new Error(`the history changed the window's size: ${panel}`);
+    if (convs.titles()[0] !== titleB || convs.titles()[1] !== titleA || text($(".history .conv.active .conv-title")) !== titleB) throw new Error(`the list is not newest-first with the open conversation marked: ${convs.titles().join(" | ")}`);
+    if (!$$(".history .group-label").map(text).some((g) => g.toLowerCase() === "today")) throw new Error("conversations are not grouped by date");
+
+    // Resume the first one: its messages and sources come back, in order,
+    // scrolled to the latest, and a follow-up continues it.
+    $(".conv-open", convs.row(titleA)).click();
+    await waitFor(() => !$(".history"), 4000, "the conversation to open");
+    await sleep(350);
+    const thread = $(".thread");
+    const resumed = $$(".turn .question").map(text).join(" | ");
+    if (resumed !== "When does the pilot start? | Where?" || $$(".turn .sources-toggle").length !== 2 || text($(".chat-title")) !== titleA) {
+      throw new Error(`the conversation was not restored: "${resumed}", ${$$(".turn .sources-toggle").length} source drawers, bar "${text($(".chat-title"))}"`);
+    }
+    if (thread.scrollHeight - thread.scrollTop - thread.clientHeight > 60) throw new Error("a resumed conversation should be scrolled to its latest message");
+    await askAndWait("Where?");
+    const resumedReply = text($(".turn.last .answer"));
+    const memory = text($(".meter"));
+    if (!resumedReply.includes("Quayside") || !memory.includes("remembered")) throw new Error(`the follow-up in a resumed conversation did not use it: ${resumedReply} | ${memory}`);
+    // Nothing leaked between the two: each has its own messages and sources.
+    let all = (await chats()).conversations;
+    const idA = all.find((c) => c.title === titleA).id;
+    const idB = all.find((c) => c.title === titleB).id;
+    let viewA = await saved(idA);
+    const viewB = await saved(idB);
+    const shape = (v) => v.messages.map((m) => `${m.role[0]}:${m.status}:${m.sources.length}`).join(" ");
+    if (viewA.messages.length !== 6 || viewB.messages.length !== 2 || viewB.messages[0].content !== "Who owns the supplier contract?") throw new Error(`messages are in the wrong conversation: A ${shape(viewA)} | B ${shape(viewB)}`);
+    if (viewA.messages.some((m) => m.role === "assistant" && (m.status !== "complete" || !m.sources.length || m.sources.some((s) => s.state !== "same") || !m.stats || !m.model))) {
+      throw new Error(`a saved answer is missing its status, sources, stats or model: ${shape(viewA)}`);
+    }
+    await log(`3r resumed "${titleA}" | questions: ${resumed} | follow-up: ${resumedReply.slice(0, 80)} | ${memory} | saved as: ${shape(viewA)} | the other conversation: ${shape(viewB)}`);
+
+    // Search (titles and what was said), then the keyboard.
+    // Every conversation listed for a search must really contain it (in its
+    // title or in something that was said), and the list must be the same as
+    // the one the store gives. Other steps have left conversations here too.
+    const searched = async (term) => {
+      await convs.search(term);
+      const shown = convs.titles();
+      const found = (await chats(term)).conversations;
+      if (shown.join(" | ") !== found.map((c) => c.title).join(" | ")) throw new Error(`searching "${term}": the panel shows ${shown.join(" | ")}, the store found ${found.map((c) => c.title).join(" | ")}`);
+      for (const c of found) {
+        const view = await saved(c.id);
+        const everything = [c.title, ...view.messages.map((m) => m.content)].join("\n").toLowerCase();
+        if (!everything.includes(term.toLowerCase())) throw new Error(`searching "${term}" listed "${c.title}", which does not contain it`);
+      }
+      return found;
+    };
+    await convs.open();
+    const inHistory = (await chats()).total;
+    const byAnswer = await searched("Quayside"); // only ever in answers, never in a title
+    const byTitle = await searched("SUPPLIER");
+    await convs.search("no such words anywhere");
+    const nothing = text($(".history .empty"));
+    const noRows = convs.titles().length;
+    await convs.search("");
+    if (!byAnswer.some((c) => c.id === idA) || byAnswer.some((c) => c.title.includes("Quayside")) || !byTitle.some((c) => c.id === idB) || byAnswer.length >= inHistory || noRows || !nothing.includes("Nothing matches") || convs.titles().length !== inHistory) {
+      throw new Error(`search: "Quayside" ${byAnswer.length} of ${inHistory}, "SUPPLIER" ${byTitle.length}, no match: ${noRows} rows "${nothing}", cleared: ${convs.titles().length}`);
+    }
+    $(".history .search input").focus();
+    key("ArrowDown");
+    const firstFocus = text($(".conv-title", document.activeElement.closest(".conv")));
+    key("ArrowDown");
+    const secondFocus = text($(".conv-title", document.activeElement.closest(".conv")));
+    key("ArrowUp");
+    key("ArrowUp");
+    const backInSearch = document.activeElement === $(".history .search input");
+    key("Escape");
+    await sleep(250);
+    if (!firstFocus || firstFocus === secondFocus || !backInSearch || $(".history") || !$(".notch.expanded")) {
+      throw new Error(`keyboard: Down -> "${firstFocus}", Down -> "${secondFocus}", Up Up back in search: ${backInSearch}, Esc closed history: ${!$(".history")}, panel still open: ${!!$(".notch.expanded")}`);
+    }
+    await log(`3s search and keys | "Quayside" (said in answers): ${byAnswer.length} of ${inHistory} conversations, each containing it | "SUPPLIER": ${byTitle.length} | no match: ${nothing} | Down, Down: ${firstFocus} -> ${secondFocus} | Esc closes the history only`);
+
+    // Rename: kept as typed, even a very long one fits the row.
+    let row = await convs.menu(titleB, "Rename");
+    let box = $(".history .rename-box");
+    const longName = "Supplier contract: who owns it, when it renews, and everything else we know about BeanWorks and the beans";
+    box.value = longName;
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(500);
+    const longRow = $(".conv-title", convs.row(longName));
+    const fits = longRow.scrollWidth > longRow.clientWidth && $(".history").scrollWidth <= $(".history").clientWidth;
+    const manual = (await chats()).conversations.find((c) => c.id === idB);
+    if (!fits || manual.title !== longName || !manual.titleManual) throw new Error(`rename: title "${manual.title}", manual ${manual.titleManual}, long title cut to fit ${fits}`);
+    await log(`3t renamed | "${manual.title.slice(0, 40)}…" kept as typed and shown cut to fit the row`);
+
+    // Delete: asks first; Cancel keeps it; Delete removes it and nothing else.
+    const indexBefore = (await invoke("list_folders")).map((f) => `${f.fileCount}/${f.chunkCount}`).join(",");
+    row = await convs.menu(longName, "Delete");
+    const question = text($(".conv-confirm", row));
+    $$(".conv-confirm button", row).find((b) => text(b) === "Cancel").click();
+    await sleep(250);
+    const keptAfterCancel = convs.titles().includes(longName);
+    row = await convs.menu(longName, "Delete");
+    $$(".conv-confirm button", row).find((b) => text(b) === "Delete").click();
+    await sleep(600);
+    const goneFromList = !convs.titles().includes(longName);
+    const goneFromStore = await saved(idB).then(() => false, () => true);
+    const indexAfter = (await invoke("list_folders")).map((f) => `${f.fileCount}/${f.chunkCount}`).join(",");
+    if (!question.startsWith("Delete this conversation?") || !keptAfterCancel || !goneFromList || !goneFromStore || indexBefore !== indexAfter) {
+      throw new Error(`delete: asked "${question}", kept after Cancel ${keptAfterCancel}, gone ${goneFromList}/${goneFromStore}, index ${indexBefore} -> ${indexAfter}`);
+    }
+    // Deleting the conversation that is open leaves a fresh chat.
+    await convs.close();
+    $(".new-chat").click();
+    await sleep(300);
+    await askAndWait("When does the pilot start?");
+    const openTitle = text($(".chat-title"));
+    row = await convs.menu(openTitle, "Delete");
+    // (two conversations share that title now: the open one is the newest, listed first)
+    $$(".conv-confirm button", $(".history .conv.active")).find((b) => text(b) === "Delete").click();
+    await sleep(600);
+    await convs.close();
+    if ($$(".turn").length || text($(".chat-title")) !== "New conversation") throw new Error(`deleting the open conversation should leave a fresh chat: ${$$(".turn").length} turns, bar "${text($(".chat-title"))}"`);
+    await log(`3u deleted | asked: "${question}" | Cancel kept it, Delete removed it and its messages | indexed files untouched (${indexAfter}) | deleting the open one left a fresh chat`);
+
     // --- Ask: stop mid-answer
     type("Summarise everything decided at the kickoff meeting in detail.");
     await sleep(100);
@@ -334,6 +540,44 @@
     $(".send.stop").click();
     await waitFor(() => !$(".send.stop"), 5000, "Stop to take effect");
     await log(`4 stopped | partial answer: ${text($(".turn.last .answer"))}`);
+    // It is saved, but as what it is: reopened later it still says "stopped".
+    await sleep(300);
+    const stoppedTitle = text($(".chat-title"));
+    const stoppedView = await saved((await chats()).conversations[0].id);
+    const stoppedMessage = stoppedView.messages[stoppedView.messages.length - 1];
+    $(".new-chat").click();
+    await sleep(300);
+    await convs.resume(stoppedTitle);
+    const stoppedNote = text($(".turn.last .turn-note")) === "(none)" ? text($(".turn.last .stopped")) : text($(".turn.last .turn-note"));
+    if (stoppedMessage.status !== "stopped" || !stoppedNote.startsWith("Stopped")) throw new Error(`a stopped answer was saved as "${stoppedMessage.status}" and reopens saying "${stoppedNote}"`);
+    await log(`4a the stopped answer in the history | saved as: ${stoppedMessage.status} (${stoppedMessage.content.length} characters kept) | reopened it says: ${stoppedNote}`);
+
+    // Starting a new chat while an answer is being written: that answer stays
+    // with its own conversation (as stopped), and none of it reaches the next.
+    $(".new-chat").click();
+    await sleep(300);
+    type("Summarise everything decided at the kickoff meeting in detail.");
+    await sleep(100);
+    $(".send").click();
+    await waitFor(() => $(".turn.last .answer p:not(.waiting)"), 120000, "the first words of the answer");
+    const abandonedStart = text($(".turn.last .answer")).slice(0, 12);
+    $(".new-chat").click(); // stops it and starts afresh
+    await waitFor(() => !$(".send.stop"), 5000, "the abandoned answer to stop");
+    await sleep(200);
+    if ($$(".turn").length || text($(".chat-title")) !== "New conversation") throw new Error("New chat during an answer should leave an empty, unnamed conversation");
+    await askAndWait("Who owns the supplier contract?");
+    const nextReply = text($(".turn.last .answer"));
+    const newest = (await chats()).conversations;
+    const nextView = await saved(newest[0].id);
+    const abandoned = await saved(newest[1].id);
+    const abandonedAnswer = abandoned.messages[abandoned.messages.length - 1];
+    if ($$(".turn").length !== 1 || !nextReply.includes("Priya") || nextView.messages.length !== 2 || nextView.messages[1].status !== "complete") {
+      throw new Error(`the conversation after New chat is not just its own question and answer: ${$$(".turn").length} turns, ${nextView.messages.length} saved, "${nextReply}"`);
+    }
+    if (abandonedAnswer.status !== "stopped" || abandoned.messages.length !== 2 || abandoned.messages[0].content !== "Summarise everything decided at the kickoff meeting in detail." || abandonedAnswer.content.includes("Priya")) {
+      throw new Error(`the abandoned answer is not where it belongs: ${abandoned.messages.length} messages, last ${abandonedAnswer.status}: "${abandonedAnswer.content.slice(0, 60)}"`);
+    }
+    await log(`4a2 New chat during an answer | the abandoned answer ("${abandonedStart}…") stayed in its own conversation as ${abandonedAnswer.status}, ${abandonedAnswer.content.length} characters | the next conversation holds only its own question and answer: ${nextReply.slice(0, 70)}`);
 
     // --- Ask: a request keeps running while other tabs are looked at
     $(".new-chat").click();
@@ -393,6 +637,17 @@
     tab("Ask");
     await sleep(300);
     await log(`10 Ask tab with nothing indexed | hint: ${text($(".hint-card"))}`);
+    // An old conversation still shows what its answers were written from,
+    // marked as no longer available: nothing is opened, nothing is re-matched.
+    await convs.resume(titleA);
+    $(".turn .sources-toggle").click();
+    await waitFor(() => $(".turn .source"), 3000, "the sources of a saved answer");
+    const goneCards = $$(".turn .source");
+    const goneLabel = text($(".source-file", goneCards[0]));
+    if (!goneCards.length || goneCards.some((c) => !c.disabled || !c.classList.contains("gone")) || !goneLabel.includes("no longer available")) {
+      throw new Error(`with the index deleted, saved citations should be shown as unavailable: "${goneLabel}", disabled ${goneCards.map((c) => c.disabled)}`);
+    }
+    await log(`10a saved citations with the index deleted | ${goneCards.length} shown, none can be opened | "${goneLabel}" | snippet kept: ${text($(".snippet", goneCards[0])).slice(0, 60)}`);
     if ($(".new-chat")) $(".new-chat").click(); // otherwise the conversation so far could answer it
     await sleep(300);
     ms = await askAndWait("Who owns the supplier contract?");
@@ -402,6 +657,24 @@
     act("Rebuild");
     await waitFor(() => sampleStatus().includes("watching"), 120000, "re-indexing to finish");
     await log(`11 re-indexed | ${folderLine()}`);
+    tab("Ask");
+    await sleep(300);
+    await convs.resume(titleA);
+    $(".turn .sources-toggle").click();
+    await waitFor(() => $(".turn .source"), 3000, "the sources of a saved answer");
+    const backCards = $$(".turn .source");
+    if (backCards.some((c) => c.disabled) || text($(".source-file", backCards[0])).includes("no longer available")) throw new Error("with the files indexed again, saved citations should be usable again");
+    await log(`11a saved citations with the files indexed again | ${backCards.length} shown, all can be opened | "${text($(".source-file", backCards[0]))}"`);
+    // Left for scripts\smoke-restart.js, which checks it after Loft has been closed and started again.
+    row = await convs.menu(titleA, "Rename");
+    box = $(".history .rename-box");
+    box.value = "Kept for the restart check";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await sleep(500);
+    await convs.close();
+    tab("Folders");
+    await sleep(300);
 
     // --- Settings: opened from the gear, holds themes, models and general options
     if ($$(".segmented button").map(text).join(",") !== "Ask,Folders") {
@@ -521,6 +794,99 @@
     } else {
       await log("13e only one display attached: display switching not exercised");
     }
+
+    // Window style: floating. The window leaves the screen edge, stays where
+    // it is put through closing and reopening, and goes back to the edge as a
+    // notch. (Still on the main display, docked at the top, panel open.)
+    const pickStyle = async (name) => {
+      $$(".settings .style-choice")
+        .find((b) => text($(".place-name", b)) === name)
+        .click();
+      await sleep(900);
+    };
+    const nativeWindow = window.__TAURI__.window.getCurrentWindow();
+    const PhysicalPosition = window.__TAURI__.window.PhysicalPosition ?? window.__TAURI__.dpi.PhysicalPosition;
+    const dpr = window.devicePixelRatio;
+    await pickStyle("Floating");
+    if (document.documentElement.dataset.style !== "floating") throw new Error("the style did not switch to floating");
+    geo = await log(
+      `13s floating, panel open | corners: ${getComputedStyle($(".notch")).borderTopLeftRadius} | ears: ${getComputedStyle($(".ear")).display} | placement choices shown: ${$$(".settings .placement").length}`,
+    );
+    if (geo[3] === 0) throw new Error(`floating: the window ${geo} is still against the top edge`);
+    if (getComputedStyle($(".ear")).display !== "none" || parseFloat(getComputedStyle($(".notch")).borderTopLeftRadius) < 10) {
+      throw new Error("floating: the panel still looks docked (ears, or square top corners)");
+    }
+    if ($$(".settings .placement").length) throw new Error("edge placement is offered for a floating window");
+    // Put it somewhere else, as a drag would, and let Loft notice.
+    const spot = [Math.round(200 * dpr), Math.round(300 * dpr)];
+    await sleep(400);
+    await nativeWindow.setPosition(new PhysicalPosition(spot[0], spot[1]));
+    await sleep(1500);
+    geo = await log("13t floating, moved to 200,300");
+    if (geo[2] !== spot[0] || geo[3] !== spot[1]) throw new Error(`floating: the window ${geo} is not where it was put`);
+    $('[aria-label="Collapse"]').click();
+    await sleep(1100);
+    geo = await log(`13u floating, collapsed | pill ${$(".notch").offsetWidth}x${$(".notch").offsetHeight}`);
+    // The pill sits under the same top-centre as the panel did.
+    if (Math.abs(geo[2] + geo[0] / 2 - (spot[0] + (540 * dpr) / 2)) > 2 || geo[3] !== spot[1]) {
+      throw new Error(`floating: the pill ${geo} did not stay where the panel was`);
+    }
+    $(".pill").click();
+    await waitFor(() => $(".notch.expanded"), 5000, "the floating panel to reopen");
+    await sleep(600);
+    geo = await log("13v floating, reopened");
+    if (geo[2] !== spot[0] || geo[3] !== spot[1]) throw new Error(`floating: the panel ${geo} reopened somewhere else`);
+    if (!$(".tab-content.shown .settings")) $('[aria-label="Settings"]').click();
+    await sleep(400);
+
+    // Living in the tray: nothing on screen while Loft is closed; the tray
+    // icon (here: the same call it makes) brings the panel back.
+    const traySwitch = () => $('.settings [role="switch"][aria-label="Live in the tray"]');
+    if (traySwitch().disabled) {
+      await log("13w no tray icon on this desktop: living in the tray not exercised");
+    } else {
+      traySwitch().click();
+      await sleep(600);
+      if (traySwitch().getAttribute("aria-checked") !== "true" || document.documentElement.dataset.tray !== "on") throw new Error("living in the tray did not turn on");
+      const whileOpen = await nativeWindow.isVisible();
+      $('[aria-label="Collapse"]').click();
+      await sleep(1400);
+      const whenClosed = await nativeWindow.isVisible();
+      if (!whileOpen || whenClosed) throw new Error(`tray: visible while open ${whileOpen}, visible when closed ${whenClosed}`);
+      await invoke("dev_summon");
+      await waitFor(() => $(".notch.expanded"), 5000, "the panel to come back from the tray");
+      await sleep(700);
+      const summoned = await nativeWindow.isVisible();
+      geo = await log(`13w tray | on screen while open: ${whileOpen}, when closed: ${whenClosed}, after the tray icon: ${summoned}`);
+      if (!summoned || geo[2] !== spot[0] || geo[3] !== spot[1]) throw new Error(`tray: the panel did not come back where it was: visible ${summoned}, ${geo}`);
+      await invoke("dev_summon"); // the icon again closes it
+      await sleep(1500);
+      if (await nativeWindow.isVisible()) throw new Error("tray: the icon did not close the panel again");
+      await invoke("dev_summon");
+      await waitFor(() => $(".notch.expanded"), 5000, "the panel to come back a second time");
+      await sleep(600);
+      if (!$(".tab-content.shown .settings")) $('[aria-label="Settings"]').click();
+      await sleep(400);
+      traySwitch().click();
+      await sleep(600);
+      $('[aria-label="Collapse"]').click();
+      await sleep(1200);
+      const pillBack = (await nativeWindow.isVisible()) && getComputedStyle($(".notch")).opacity === "1";
+      await log(`13x tray off again | pill on screen when closed: ${pillBack}`);
+      if (!pillBack) throw new Error("with living in the tray off, the pill did not come back");
+      $(".pill").click();
+      await waitFor(() => $(".notch.expanded"), 5000, "the panel to reopen");
+      await sleep(600);
+      if (!$(".tab-content.shown .settings")) $('[aria-label="Settings"]').click();
+      await sleep(400);
+    }
+
+    await pickStyle("Notch");
+    geo = await log(`13y notch again | style: ${document.documentElement.dataset.style} | placement choices shown: ${$$(".settings .placement").length}`);
+    if (geo[3] !== 0 || Math.abs(geo[2] + geo[0] / 2 - (screen.width * dpr) / 2) > 2 || $$(".settings .placement").length !== 2) {
+      throw new Error(`back to the notch: window ${geo} is not docked at the top centre`);
+    }
+
     if (startDisplay !== mainDisplay) await pickDisplay(startDisplay);
     if (startedAt === "right") await place("Right");
 
@@ -580,9 +946,10 @@
       await log("13g picture model not downloaded: picture descriptions not exercised");
     }
 
-    $('.settings [role="switch"]').click();
+    const atLogin = () => $('.settings [role="switch"][aria-label="Launch at login"]');
+    atLogin().click();
     await sleep(600);
-    await log(`14 launch-at-login in a dev build | on: ${$('.settings [role="switch"]').getAttribute("aria-checked")} | ${text($(".settings .note"))}`);
+    await log(`14 launch-at-login in a dev build | on: ${atLogin().getAttribute("aria-checked")} | ${text($(".note", atLogin().closest("section")))}`);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(300);
     await log(

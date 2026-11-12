@@ -43,6 +43,48 @@ export interface Source {
   location?: string | null;
   score: number;
   snippet: string;
+  /**
+   * For a citation in a saved conversation: what has become of the file
+   * since the answer was written. Absent for an answer just given.
+   */
+  state?: "same" | "changed" | "missing";
+}
+
+/** A saved conversation, as listed in the chat history. */
+export interface Conversation {
+  id: string;
+  title: string;
+  /** The user named it. */
+  titleManual: boolean;
+  /** Milliseconds since 1970, UTC. */
+  createdAt: number;
+  updatedAt: number;
+  openedAt?: number | null;
+  pinned: boolean;
+  archived: boolean;
+  /** Questions asked in it. */
+  questions: number;
+}
+
+/** How an answer ended. Only "complete" is a finished answer. */
+export type MessageStatus = "pending" | "complete" | "stopped" | "failed" | "interrupted";
+
+/** One saved message of a conversation. */
+export interface SavedMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  status: MessageStatus;
+  model?: string | null;
+  stats?: AskStats | null;
+  error?: string | null;
+  sources: Source[];
+}
+
+export interface ConversationView {
+  conversation: Conversation;
+  messages: SavedMessage[];
 }
 
 export type RuntimeState = "stopped" | "loading" | "ready" | "error";
@@ -50,7 +92,7 @@ export type RuntimeState = "stopped" | "loading" | "ready" | "error";
 export interface RuntimeStatus {
   chat: RuntimeState;
   embed: RuntimeState;
-  accelerator: "cpu" | "metal" | "cuda" | "vulkan";
+  accelerator: "cpu" | "metal" | "cuda" | "vulkan" | "openvino";
   message?: string | null;
 }
 
@@ -85,6 +127,12 @@ export interface AskResult {
   sources: Source[];
   /** Absent when the model was not called (nothing found) or was stopped. */
   stats?: AskStats | null;
+  /** How the answer ended: complete, or stopped. */
+  status?: MessageStatus;
+  /** The conversation the turn was saved in; absent when it was not saved. */
+  conversation?: Conversation | null;
+  /** The turn could not be saved, and why. */
+  saveError?: string | null;
 }
 
 /** An attached display, for the picker in Settings. */
@@ -97,4 +145,208 @@ export interface MonitorInfo {
   primary: boolean;
   /** The one the notch is on now. */
   selected: boolean;
+}
+
+// ---- Performance & Battery (mirrors src-tauri/src/inference.rs and engine.rs)
+
+/** A llama.cpp build: the software path a model runs through. */
+export type Backend = "cuda" | "vulkan" | "openvino" | "metal" | "cpu";
+export type PowerSource = "ac" | "battery" | "unknown";
+export type EngineName = "chat" | "embed";
+
+/** What to run a model on: a backend and, for GPU and NPU backends, a device. */
+export interface Target {
+  backend: Backend;
+  /** A stable device key; absent = the backend's best device, or the CPU. */
+  device?: string | null;
+}
+
+/** The choice for one power state. */
+export interface InferenceProfile {
+  mode: "automatic" | "manual";
+  target?: Target | null;
+  /** Advanced: a different target for the embedding model. */
+  embedTarget?: Target | null;
+}
+
+export interface PowerSettings {
+  pluggedIn: InferenceProfile;
+  onBattery: InferenceProfile;
+  /** Use the battery choice while on battery. Off: the plugged-in choice always. */
+  autoSwitch: boolean;
+  /** If the chosen engine cannot run the model, try another one. */
+  allowFallback: boolean;
+}
+
+/** Something selectable in an engine dropdown. */
+export interface TargetOption {
+  target: Target;
+  label: string;
+  available: boolean;
+  experimental: boolean;
+  /** Why it cannot be used right now. */
+  reason?: string | null;
+}
+
+export interface EngineDevice {
+  key: string;
+  name: string;
+  kind: "gpu" | "npu" | "cpu";
+  vendor: string;
+  discrete: boolean;
+  memoryMib?: number | null;
+  runtimeId: string;
+}
+
+export interface EngineBackend {
+  backend: Backend;
+  status: "available" | "notInstalled" | "hardwareUnavailable" | "driverMissing" | "failed";
+  experimental: boolean;
+  devices: EngineDevice[];
+  detail?: string | null;
+}
+
+export interface EngineInventory {
+  cpu: string;
+  hardware: { name: string; kind: "gpu" | "npu" | "cpu"; vendor: string; driver?: string | null }[];
+  backends: EngineBackend[];
+  /** The llama.cpp revision the engine builds come from. */
+  revision: string;
+}
+
+/** One model server: what was asked for and what is really running. */
+export interface EngineStatus {
+  engine: EngineName;
+  model?: string | null;
+  state: RuntimeState;
+  requested: string;
+  requestedTarget?: Target | null;
+  active?: string | null;
+  activeTarget?: Target | null;
+  activeBackend?: Backend | null;
+  activeDevice?: string | null;
+  /** The device was confirmed from the server's own load log. */
+  verified: boolean;
+  detail?: string | null;
+  fallbackUsed: boolean;
+  fallbackReason?: string | null;
+  /** A switch is waiting for work in progress to end. */
+  pending: boolean;
+  notes: string[];
+  error?: string | null;
+  /** What to do about a failure or a fallback, where there is something to do. */
+  hint?: string | null;
+}
+
+export interface InferenceStatus {
+  powerSource: PowerSource;
+  /** Which choice is in force. */
+  profile: "override" | "pluggedIn" | "onBattery";
+  switching: boolean;
+  pendingSwitch: boolean;
+  overrideTarget?: Target | null;
+  chat: EngineStatus;
+  embed: EngineStatus;
+  message: string;
+}
+
+/** An optional engine build that can be added to, or removed from, this computer. */
+export interface EngineDownload {
+  backend: Backend;
+  sizeBytes: number;
+  note?: string | null;
+  /** It is in Loft's own engines folder, so it can be removed again. */
+  installed: boolean;
+  /** Why installing it here would be pointless, if it would. */
+  blocked?: string | null;
+}
+
+export interface InferenceOverview {
+  settings: PowerSettings;
+  inventory: EngineInventory;
+  options: TargetOption[];
+  downloads: EngineDownload[];
+  status: InferenceStatus;
+}
+
+/** Progress of an engine install (`engine:install`). */
+export interface EngineInstallProgress {
+  backend: Backend;
+  stage?: "downloading" | "unpacking" | "installing" | null;
+  received: number;
+  total: number;
+  done: boolean;
+  error?: string | null;
+}
+
+/** What happened when an engine was tried ("Try another engine now", "Try NPU now"). */
+export interface EngineTrial {
+  requested: string;
+  active?: string | null;
+  /** The requested engine is running the model and answered the test question. */
+  ok: boolean;
+  /** The switch is waiting for an answer in progress. */
+  pending: boolean;
+  verified: boolean;
+  detail?: string | null;
+  fallbackUsed: boolean;
+  problem?: string | null;
+  hint?: string | null;
+  note?: string | null;
+  answer?: string | null;
+  firstTokenMs?: number | null;
+  totalMs?: number | null;
+  tokensPerSecond?: number | null;
+  answerTokens?: number | null;
+}
+
+/** One engine measured by "Test performance". */
+export interface BenchRow {
+  target: Target;
+  label: string;
+  /** Seconds since 1970. */
+  at: number;
+  powerSource: PowerSource;
+  ok: boolean;
+  error?: string | null;
+  /** The engine's own log confirmed where the model was loaded. */
+  verified: boolean;
+  actual?: string | null;
+  loadMs?: number | null;
+  firstTokenMs?: number | null;
+  totalMs?: number | null;
+  tokensPerSecond?: number | null;
+  answerTokens?: number | null;
+  peakMemoryMib?: number | null;
+  deviceMemoryMib?: number | null;
+  /** The whole computer's battery drain during the test, in watts. */
+  drainWatts?: number | null;
+  joulesPerToken?: number | null;
+  identity: { modelId: string; context: number; revision: string; device?: string | null; driver?: string | null };
+  /** Why the measurement no longer applies; absent = current. */
+  stale?: string | null;
+}
+
+export interface BenchPick {
+  target: Target;
+  label: string;
+  reason: string;
+}
+
+export interface BenchReport {
+  model?: string | null;
+  running: boolean;
+  rows: BenchRow[];
+  /** Usable engines with no current measurement. */
+  unmeasured: string[];
+  advice: { pluggedIn?: BenchPick | null; onBattery?: BenchPick | null; batteryNote: string };
+}
+
+/** Progress of a running performance test (`bench:progress`). */
+export interface BenchProgress {
+  running: boolean;
+  index: number;
+  total: number;
+  label: string;
+  stage: "loading" | "measuring" | "done";
 }

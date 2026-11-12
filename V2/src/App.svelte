@@ -8,7 +8,11 @@
     onToggle,
     listFolders,
     onFoldersChanged,
+    movedByLoft,
+    onWindowMoved,
+    startWindowDrag,
   } from "./lib/api";
+  import { windowStyle, windowMoved } from "./lib/window-style.svelte";
   import type { FolderInfo, RuntimeStatus } from "./lib/types";
   import type { Tab } from "./lib/state.svelte";
   import Ask from "./lib/components/Ask.svelte";
@@ -64,6 +68,15 @@
     window.addEventListener("mousedown", onDown);
     cleanups.push(() => window.removeEventListener("mousedown", onDown));
 
+    // Floating: once a drag has settled, remember where the window was left.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    onWindowMoved(() => {
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        if (!movedByLoft()) windowMoved();
+      }, 350);
+    }).then((un) => cleanups.push(un));
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (ui.tab === "settings") toggleSettings(); // Esc backs out of Settings first
@@ -74,6 +87,31 @@
 
     return () => cleanups.forEach((fn) => fn());
   });
+
+  // Floating: the pill and the top of the panel are handles to drag the
+  // window by. A press that moves is a drag; one that does not is a click.
+  let pressAt: { x: number; y: number } | null = null;
+  let dragged = false;
+  function pillDown(e: PointerEvent) {
+    dragged = false;
+    pressAt = windowStyle.value === "floating" && e.button === 0 ? { x: e.screenX, y: e.screenY } : null;
+  }
+  function pillMove(e: PointerEvent) {
+    if (!pressAt || Math.hypot(e.screenX - pressAt.x, e.screenY - pressAt.y) < 4) return;
+    pressAt = null;
+    dragged = true;
+    startWindowDrag().catch(() => {});
+  }
+  function pillClick() {
+    if (dragged) return; // that press moved the window
+    if (ui.expanded) collapse();
+    else expand("ask");
+  }
+  function headerDown(e: PointerEvent) {
+    if (windowStyle.value !== "floating" || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return; // the tabs and buttons still work
+    startWindowDrag().catch(() => {});
+  }
 
   const ready = $derived(
     runtime ? runtime.chat === "ready" && runtime.embed === "ready" : false,
@@ -147,7 +185,9 @@
       <!-- Collapsed pill -->
       <button
         class="pill"
-        onclick={() => (ui.expanded ? collapse() : expand("ask"))}
+        onclick={pillClick}
+        onpointerdown={pillDown}
+        onpointermove={pillMove}
         aria-label="Open Loft"
         tabindex={ui.expanded ? -1 : 0}
       >
@@ -158,7 +198,8 @@
 
       <!-- Expanded panel -->
       <div class="panel" inert={!ui.expanded}>
-        <header class="tabs">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <header class="tabs" onpointerdown={headerDown}>
           <div class="segmented">
             <button
               class:active={ui.tab === "ask"}
@@ -310,6 +351,36 @@
   /* The collapse arrow points at the edge the panel folds back into. */
   :global(html[data-placement="right"]) .collapse :global(svg) {
     transform: rotate(90deg);
+  }
+
+  /* Floating (Settings → Window): not attached to any edge. A capsule, and
+     a card with all four corners round, a little inside the window so the
+     shadow has room above as well. Dragged by the pill or the panel's top. */
+  :global(html[data-style="floating"]) .stage {
+    padding-top: 14px;
+  }
+  :global(html[data-style="floating"]) .notch {
+    border-radius: 18px;
+  }
+  :global(html[data-style="floating"]) .notch.expanded {
+    border-radius: var(--radius-panel);
+  }
+  :global(html[data-style="floating"]) .ear {
+    display: none;
+  }
+  :global(html[data-style="floating"]) .pill,
+  :global(html[data-style="floating"]) .tabs {
+    cursor: grab;
+  }
+  :global(html[data-style="floating"]) .tabs :global(button) {
+    cursor: pointer;
+  }
+
+  /* Living in the tray: there is no pill. The window is hidden while Loft
+     is closed; this covers the moments either side of that. */
+  :global(html[data-tray="on"]) .notch:not(.expanded) {
+    opacity: 0;
+    pointer-events: none;
   }
 
   /* Clips the pill/panel while the notch animates between its two sizes. */

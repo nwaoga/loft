@@ -4,6 +4,23 @@
 
 import type {
   AskResult,
+  Conversation,
+  ConversationView,
+  SavedMessage,
+  Backend,
+  BenchProgress,
+  BenchReport,
+  BenchRow,
+  EngineInstallProgress,
+  EngineName,
+  EngineTrial,
+  EngineStatus,
+  InferenceOverview,
+  InferenceStatus,
+  PowerSettings,
+  PowerSource,
+  Target,
+  TargetOption,
   AskStats,
   ChatTurn,
   FolderInfo,
@@ -76,9 +93,432 @@ export async function onRuntimeStatus(cb: (s: RuntimeStatus) => void): Promise<U
   return listen<RuntimeStatus>("runtime:status", (e) => cb(e.payload));
 }
 
+// ---- Performance & Battery -------------------------------------------------
+
+const NVIDIA = "nvidia-geforce-rtx-4050-laptop-gpu";
+const IRIS = "intel-r-iris-r-xe-graphics";
+/** Preview data: a laptop with NVIDIA and Intel graphics; CUDA and OpenVINO not installed. */
+const mockOptions: TargetOption[] = [
+  { target: { backend: "cuda", device: null }, label: "CUDA — not installed", available: false, experimental: false, reason: "The CUDA engine is an optional download." },
+  { target: { backend: "vulkan", device: IRIS }, label: "Intel Iris Xe Graphics (Vulkan)", available: true, experimental: false },
+  { target: { backend: "vulkan", device: NVIDIA }, label: "NVIDIA GeForce RTX 4050 Laptop GPU (Vulkan)", available: true, experimental: false },
+  { target: { backend: "openvino", device: null }, label: "OpenVINO — not installed", available: false, experimental: true, reason: "The OpenVINO engine is an optional download." },
+  { target: { backend: "cpu", device: null }, label: "CPU only", available: true, experimental: false },
+];
+let mockSettings: PowerSettings = {
+  pluggedIn: { mode: "automatic", target: null, embedTarget: null },
+  onBattery: { mode: "automatic", target: null, embedTarget: null },
+  autoSwitch: true,
+  allowFallback: true,
+};
+let mockPower: PowerSource = "ac";
+let mockOverride: Target | null = null;
+/** Preview: optional engines "installed" from the Settings page. */
+const mockInstalled = new Set<Backend>();
+let mockBench: BenchRow[] = [];
+const OV_CPU = "intel-r-core-tm-i7-12700h";
+const OV_GPU = "intel-r-iris-r-xe-graphics-igpu";
+/** The options as they stand, given what has been "installed". */
+function mockOptionsNow(): TargetOption[] {
+  return mockOptions.flatMap((o): TargetOption[] => {
+    if (o.target.backend === "cuda" && mockInstalled.has("cuda")) {
+      return [{ target: { backend: "cuda", device: NVIDIA }, label: "NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)", available: true, experimental: false }];
+    }
+    if (o.target.backend === "openvino" && mockInstalled.has("openvino")) {
+      return [
+        { target: { backend: "openvino", device: OV_CPU }, label: "12th Gen Intel Core i7-12700H (OpenVINO)", available: true, experimental: true },
+        { target: { backend: "openvino", device: OV_GPU }, label: "Intel Iris Xe Graphics (OpenVINO)", available: true, experimental: true },
+      ];
+    }
+    return [o];
+  });
+}
+const mockStatusListeners = new Set<(s: InferenceStatus) => void>();
+
+/** A deep copy as plain data (the UI may hand over reactive proxies). */
+const plain = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+
+const sameTarget = (a?: Target | null, b?: Target | null) =>
+  !!a && !!b && a.backend === b.backend && (a.device ?? null) === (b.device ?? null);
+
+function mockEngine(engine: EngineName): EngineStatus {
+  const onBattery = mockSettings.autoSwitch && mockPower === "battery";
+  const profile = onBattery ? mockSettings.onBattery : mockSettings.pluggedIn;
+  const wanted = mockOverride ?? (profile.mode === "manual" ? profile.target ?? null : null);
+  const options = mockOptionsNow();
+  const option = (t: Target) => options.find((o) => sameTarget(o.target, t));
+  const automatic = onBattery ? mockOptions[1] : mockOptions[2];
+  const chosen = wanted ? option(wanted) : automatic;
+  const usable = chosen?.available ? chosen : mockSettings.allowFallback ? automatic : undefined;
+  const label = (o?: TargetOption) => o?.label ?? null;
+  return {
+    engine,
+    model: engine === "chat" ? "qwen2.5-3b-instruct-q4" : "nomic-embed-text-v1.5",
+    state: usable ? "ready" : "error",
+    requested: wanted ? label(chosen) ?? "Unavailable" : onBattery ? "Automatic (battery saving)" : "Automatic (performance)",
+    requestedTarget: wanted,
+    active: label(usable),
+    activeTarget: usable?.target ?? null,
+    activeBackend: usable?.target.backend ?? null,
+    activeDevice: usable?.label.replace(/ \([^)]*\)$/, "") ?? "CPU",
+    verified: !!usable,
+    detail: usable ? "2,005 MiB of the model is on the device." : null,
+    fallbackUsed: !!usable && usable !== chosen,
+    fallbackReason: usable && usable !== chosen ? chosen?.reason ?? "it is not available" : null,
+    pending: false,
+    notes:
+      engine === "chat" && wanted?.backend === "openvino"
+        ? ["OpenVINO is experimental in llama.cpp: some models fail or answer less accurately than on other engines."]
+        : [],
+    error: usable ? null : `${label(chosen)}: ${chosen?.reason ?? "unavailable"}`,
+    hint: null,
+  };
+}
+
+function mockInference(): InferenceOverview {
+  const chat = mockEngine("chat");
+  const profile = mockOverride ? "override" : mockSettings.autoSwitch && mockPower === "battery" ? "onBattery" : "pluggedIn";
+  const ovInstalled = mockInstalled.has("openvino");
+  const cudaInstalled = mockInstalled.has("cuda");
+  return plain({
+    settings: mockSettings,
+    options: mockOptionsNow(),
+    downloads: [
+      { backend: "cuda" as const, sizeBytes: 592_700_000, note: "CUDA 13.4 for NVIDIA graphics cards; needs a current NVIDIA driver.", installed: cudaInstalled, blocked: null },
+      { backend: "openvino" as const, sizeBytes: 104_700_000, note: "OpenVINO 2026.4.1 for Intel processors, graphics and NPUs. Experimental.", installed: ovInstalled, blocked: null },
+    ],
+    inventory: {
+      cpu: "12th Gen Intel(R) Core(TM) i7-12700H",
+      revision: "b12110",
+      hardware: [
+        { name: "NVIDIA GeForce RTX 4050 Laptop GPU", kind: "gpu" as const, vendor: "nvidia", driver: "32.0.16.2101" },
+        { name: "Intel(R) Iris(R) Xe Graphics", kind: "gpu" as const, vendor: "intel", driver: "31.0.101.4502" },
+      ],
+      backends: [
+        cudaInstalled
+          ? {
+              backend: "cuda" as const,
+              status: "available" as const,
+              experimental: false,
+              detail: null,
+              devices: [{ key: NVIDIA, name: "NVIDIA GeForce RTX 4050 Laptop GPU", kind: "gpu" as const, vendor: "nvidia", discrete: true, memoryMib: 5920, runtimeId: "CUDA0" }],
+            }
+          : { backend: "cuda" as const, status: "notInstalled" as const, experimental: false, devices: [], detail: "The CUDA engine is an optional download." },
+        {
+          backend: "vulkan" as const,
+          status: "available" as const,
+          experimental: false,
+          detail: null,
+          devices: [
+            { key: IRIS, name: "Intel(R) Iris(R) Xe Graphics", kind: "gpu" as const, vendor: "intel", discrete: false, memoryMib: 16193, runtimeId: "Vulkan0" },
+            { key: NVIDIA, name: "NVIDIA GeForce RTX 4050 Laptop GPU", kind: "gpu" as const, vendor: "nvidia", discrete: true, memoryMib: 5920, runtimeId: "Vulkan1" },
+          ],
+        },
+        ovInstalled
+          ? {
+              backend: "openvino" as const,
+              status: "available" as const,
+              experimental: true,
+              detail: "No NPU was found by OpenVINO (it needs an Intel Core Ultra processor and the Intel NPU driver).",
+              devices: [
+                { key: OV_CPU, name: "12th Gen Intel(R) Core(TM) i7-12700H", kind: "cpu" as const, vendor: "intel", discrete: false, memoryMib: null, runtimeId: "CPU" },
+                { key: OV_GPU, name: "Intel(R) Iris(R) Xe Graphics (iGPU)", kind: "gpu" as const, vendor: "intel", discrete: false, memoryMib: 16193, runtimeId: "GPU" },
+              ],
+            }
+          : { backend: "openvino" as const, status: "notInstalled" as const, experimental: true, devices: [], detail: "The OpenVINO engine is an optional download." },
+        { backend: "cpu" as const, status: "available" as const, experimental: false, devices: [], detail: null },
+      ],
+    },
+    status: {
+      powerSource: mockPower,
+      profile: profile as InferenceStatus["profile"],
+      switching: false,
+      pendingSwitch: false,
+      overrideTarget: mockOverride,
+      chat,
+      embed: mockEngine("embed"),
+      message: chat.error ?? (chat.fallbackUsed ? `${chat.requested} failed — fallback to ${chat.active}` : chat.active ?? ""),
+    },
+  });
+}
+
+function mockChanged(): InferenceOverview {
+  const overview = mockInference();
+  mockStatusListeners.forEach((cb) => cb(overview.status));
+  return overview;
+}
+
+/** Engines, devices, the saved choices and what is running right now. */
+export async function getInference(): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("get_inference");
+  return mockInference();
+}
+
+/** Save the plugged-in and battery choices and apply them. */
+export async function setInferenceSettings(settings: PowerSettings): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("set_inference_settings", { settings });
+  mockSettings = plain(settings);
+  return mockChanged();
+}
+
+/** "Try another engine now": run the chat model on `target` until called with null. */
+export async function setEngineOverride(target: Target | null): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("set_engine_override", { target });
+  mockOverride = plain(target);
+  return mockChanged();
+}
+
+/** Look for engines and devices again, forget earlier failures, and try again. */
+export async function retryEngines(): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("retry_engines");
+  return mockChanged();
+}
+
+/** The last lines a model server logged. */
+export async function getEngineLog(engine: EngineName): Promise<string[]> {
+  if (isTauri()) return invoke<string[]>("get_engine_log", { engine });
+  return [`(preview) ${engine} server log`, "load_tensors:      Vulkan1 model buffer size =  2005.12 MiB"];
+}
+
+/** Fires when an engine starts, switches, falls back or fails, or the power source changes. */
+export async function onInferenceStatus(cb: (s: InferenceStatus) => void): Promise<Unsub> {
+  if (!isTauri()) {
+    mockStatusListeners.add(cb);
+    return () => mockStatusListeners.delete(cb);
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<InferenceStatus>("inference:status", (e) => cb(e.payload));
+}
+
+/** Download and install an optional engine (CUDA, OpenVINO); progress arrives through `onEngineInstall`. */
+export async function installEngine(backend: Backend): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("install_engine", { backend });
+  const total = backend === "cuda" ? 592_700_000 : 104_700_000;
+  mockInstallCancelled = false;
+  for (let step = 1; step <= 12; step++) {
+    await sleep(160);
+    if (mockInstallCancelled) {
+      mockInstallListeners.forEach((cb) => cb({ backend, stage: null, received: 0, total, done: true, error: "Cancelled." }));
+      throw "Cancelled.";
+    }
+    mockInstallListeners.forEach((cb) => cb({ backend, stage: step < 11 ? "downloading" : "unpacking", received: Math.min(total, (total * step) / 10), total, done: false }));
+  }
+  mockInstalled.add(backend);
+  mockInstallListeners.forEach((cb) => cb({ backend, stage: null, received: total, total, done: true }));
+  return mockChanged();
+}
+
+let mockInstallCancelled = false;
+const mockInstallListeners = new Set<(p: EngineInstallProgress) => void>();
+
+export async function cancelEngineInstall(): Promise<void> {
+  if (isTauri()) return invoke<void>("cancel_engine_install");
+  mockInstallCancelled = true;
+}
+
+/** Remove an optional engine that was installed from Settings. */
+export async function removeEngine(backend: Backend): Promise<InferenceOverview> {
+  if (isTauri()) return invoke<InferenceOverview>("remove_engine", { backend });
+  mockInstalled.delete(backend);
+  if (mockOverride?.backend === backend) mockOverride = null;
+  return mockChanged();
+}
+
+export async function onEngineInstall(cb: (p: EngineInstallProgress) => void): Promise<Unsub> {
+  if (!isTauri()) {
+    mockInstallListeners.add(cb);
+    return () => mockInstallListeners.delete(cb);
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<EngineInstallProgress>("engine:install", (e) => cb(e.payload));
+}
+
+/**
+ * "Try another engine now" / "Try NPU now": run the chat model on `target`
+ * (temporarily), confirm where it really runs, and ask it a short question.
+ */
+export async function tryEngine(target: Target): Promise<{ trial: EngineTrial; overview: InferenceOverview }> {
+  if (isTauri()) return invoke<{ trial: EngineTrial; overview: InferenceOverview }>("try_engine", { target });
+  await sleep(700);
+  mockOverride = plain(target);
+  const overview = mockChanged();
+  const chat = overview.status.chat;
+  const speed = target.backend === "cpu" ? 8.2 : target.device === NVIDIA ? 56 : 9.6;
+  return {
+    overview,
+    trial: {
+      requested: chat.requested,
+      active: chat.active,
+      ok: true,
+      pending: false,
+      verified: true,
+      detail: chat.detail,
+      fallbackUsed: false,
+      note: chat.notes[0] ?? null,
+      answer: "Running an AI model locally means the model's files and all of its computation stay on your own computer. Nothing you ask is sent to an online service.",
+      firstTokenMs: Math.round(9000 / speed),
+      totalMs: Math.round(9000 / speed + 34000 / speed),
+      tokensPerSecond: speed,
+      answerTokens: 34,
+    },
+  };
+}
+
+function mockReport(): BenchReport {
+  const current = mockBench.filter((r) => r.ok);
+  const best = [...current].sort((a, b) => (b.tokensPerSecond ?? 0) - (a.tokensPerSecond ?? 0));
+  return plain({
+    model: "qwen2.5-3b-instruct-q4",
+    running: false,
+    rows: mockBench,
+    unmeasured: mockBench.length
+      ? mockOptionsNow()
+          .filter((o) => o.available && !mockBench.some((r) => sameTarget(r.target, o.target)))
+          .map((o) => o.label)
+      : [],
+    advice: {
+      pluggedIn: best[0]
+        ? {
+            target: best[0].target,
+            label: best[0].label,
+            reason: `Fastest in the test: ${Math.round(best[0].tokensPerSecond ?? 0)} tokens/s${best[1] ? ` (next: ${best[1].label}, ${(best[1].tokensPerSecond ?? 0).toFixed(1)} tokens/s)` : ""}.`,
+          }
+        : null,
+      onBattery: null,
+      batteryNote:
+        "Power efficiency is unmeasured: energy can only be measured while running on battery. Unplug and test again to compare engines by battery use; until then Automatic on battery keeps to its rule of thumb (it stays off the discrete graphics card).",
+    },
+  });
+}
+
+const mockBenchListeners = new Set<(p: BenchProgress) => void>();
+
+/** The stored measurements for the selected chat model, and what they suggest. */
+export async function getBenchmarks(): Promise<BenchReport> {
+  if (isTauri()) return invoke<BenchReport>("get_benchmarks");
+  return mockReport();
+}
+
+/** "Test performance": measure every available engine with the selected chat model. */
+export async function runBenchmark(targets?: Target[]): Promise<BenchReport> {
+  if (isTauri()) return invoke<BenchReport>("run_benchmark", { targets: targets ?? null });
+  const options = mockOptionsNow().filter((o) => o.available);
+  mockBench = [];
+  for (const [index, o] of options.entries()) {
+    const label = o.label;
+    for (const stage of ["loading", "measuring"] as const) {
+      mockBenchListeners.forEach((cb) => cb({ running: true, index, total: options.length, label, stage }));
+      await sleep(450);
+    }
+    const speed = o.target.backend === "cpu" ? 8.1 : o.target.device === NVIDIA ? (o.target.backend === "cuda" ? 61.4 : 55.2) : 9.6;
+    mockBench.push({
+      target: o.target,
+      label,
+      at: Math.floor(Date.now() / 1000),
+      powerSource: mockPower,
+      ok: true,
+      verified: true,
+      actual: o.target.backend === "cpu" ? "The model is held in system memory; nothing was offloaded." : "1835 MiB of the model is on the device.",
+      loadMs: o.target.backend === "cpu" ? 900 : 2600,
+      firstTokenMs: Math.round(42000 / speed),
+      totalMs: Math.round(42000 / speed + 96000 / speed),
+      tokensPerSecond: speed,
+      answerTokens: 96,
+      peakMemoryMib: o.target.backend === "cpu" ? 2380 : 640,
+      deviceMemoryMib: o.target.backend === "cpu" ? null : 2211,
+      identity: { modelId: "qwen2.5-3b-instruct-q4", context: 32768, revision: "b12110", device: o.target.device ? o.label.replace(/ \([^)]*\)$/, "") : null, driver: null },
+      stale: null,
+    });
+  }
+  mockBenchListeners.forEach((cb) => cb({ running: false, index: options.length, total: options.length, label: "", stage: "done" }));
+  return mockReport();
+}
+
+export async function cancelBenchmark(): Promise<void> {
+  if (isTauri()) return invoke<void>("cancel_benchmark");
+}
+
+export async function onBenchProgress(cb: (p: BenchProgress) => void): Promise<Unsub> {
+  if (!isTauri()) {
+    mockBenchListeners.add(cb);
+    return () => mockBenchListeners.delete(cb);
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<BenchProgress>("bench:progress", (e) => cb(e.payload));
+}
+
+/** Development builds only: pretend the power source changed. */
+export async function devSetPower(source: PowerSource): Promise<void> {
+  if (isTauri()) return invoke<void>("dev_set_power", { source });
+  mockPower = source;
+  mockChanged();
+}
+
 /** Grow the native window before the panel opens / shrink it after it closes. */
 export async function setExpanded(expanded: boolean): Promise<void> {
-  if (isTauri()) return invoke<void>("set_expanded", { expanded });
+  if (isTauri()) return ownMove(() => invoke<void>("set_expanded", { expanded }));
+}
+
+// Loft moves and resizes its own window (opening, closing, changing edge or
+// style). Those moves must not be mistaken for the user dragging it.
+let ownMoveAt = 0;
+async function ownMove<T>(action: () => Promise<T>): Promise<T> {
+  ownMoveAt = Date.now();
+  try {
+    return await action();
+  } finally {
+    ownMoveAt = Date.now();
+  }
+}
+/** True if Loft itself moved the window in the last moment. */
+export const movedByLoft = (withinMs = 900): boolean => Date.now() - ownMoveAt < withinMs;
+
+export interface WindowSettings {
+  style: "notch" | "floating";
+  /** No pill on screen: Loft is opened from its tray icon or the hotkey. */
+  trayOnly: boolean;
+  /** This desktop gave Loft a tray (menu bar) icon. */
+  trayAvailable: boolean;
+}
+
+let mockWindow: WindowSettings = { style: "notch", trayOnly: false, trayAvailable: true };
+
+/** How Loft appears: notch or floating, and whether it lives in the tray. */
+export async function getWindowSettings(): Promise<WindowSettings> {
+  if (isTauri()) return invoke<WindowSettings>("get_window_settings");
+  return { ...mockWindow };
+}
+
+/** Switch between the docked notch and the floating window, and remember it. */
+export async function setWindowStyle(style: "notch" | "floating", expanded: boolean): Promise<void> {
+  if (isTauri()) return ownMove(() => invoke<void>("set_window_style", { style, expanded }));
+  mockWindow.style = style;
+}
+
+/** Live in the tray (nothing on screen until asked for), or not. Returns the resulting state. */
+export async function setTrayOnly(enabled: boolean, expanded: boolean): Promise<boolean> {
+  if (isTauri()) return ownMove(() => invoke<boolean>("set_tray_only", { enabled, expanded }));
+  mockWindow.trayOnly = enabled;
+  return enabled;
+}
+
+/** Floating: remember where the window is now (it was just dragged there). */
+export async function rememberPosition(): Promise<void> {
+  if (isTauri()) return invoke<void>("remember_position");
+}
+
+/** Let the user drag the (floating) window; ends when the mouse button is released. */
+export async function startWindowDrag(): Promise<void> {
+  if (!isTauri()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().startDragging();
+}
+
+/** Calls back whenever the window has been moved (by anyone). */
+export async function onWindowMoved(cb: () => void): Promise<Unsub> {
+  if (!isTauri()) return () => {};
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().onMoved(() => cb());
 }
 
 let mockPlacement: "top" | "right" = "top";
@@ -94,7 +534,7 @@ export async function getPlacement(): Promise<"top" | "right"> {
  * current state, so the window is moved at the right size.
  */
 export async function setPlacement(placement: "top" | "right", expanded: boolean): Promise<void> {
-  if (isTauri()) return invoke<void>("set_placement", { placement, expanded });
+  if (isTauri()) return ownMove(() => invoke<void>("set_placement", { placement, expanded }));
   mockPlacement = placement;
 }
 
@@ -111,7 +551,7 @@ export async function listMonitors(): Promise<MonitorInfo[]> {
 
 /** Move the notch to another display and remember it. */
 export async function setMonitor(id: string, expanded: boolean): Promise<void> {
-  if (isTauri()) return invoke<void>("set_monitor", { id, expanded });
+  if (isTauri()) return ownMove(() => invoke<void>("set_monitor", { id, expanded }));
   mockMonitors = mockMonitors.map((m) => ({ ...m, selected: m.id === id }));
 }
 
@@ -257,25 +697,52 @@ export async function ask(
   options: AnswerOptions,
   onToken: (chunk: string) => void,
   onSources?: (sources: Source[]) => void,
+  saving?: {
+    /** The conversation this question belongs to; null starts a new one. */
+    conversation: string | null;
+    /** Keep the turn in the chat history. */
+    save: boolean;
+    /** The question has been stored: here is its conversation. */
+    onSaved?: (conversation: Conversation) => void;
+  },
 ): Promise<AskResult> {
   if (isTauri()) {
     const { listen } = await import("@tauri-apps/api/event");
+    // Every event of this answer carries this id, and nothing else is
+    // listened to: text from an answer that was just stopped cannot land here.
+    const request = crypto.randomUUID();
     let answer = "";
-    const unToken = await listen<string>("ask:token", (e) => {
-      answer += e.payload;
-      onToken(e.payload);
+    const unToken = await listen<{ request: string; text: string }>("ask:token", (e) => {
+      if (e.payload.request !== request) return;
+      answer += e.payload.text;
+      onToken(e.payload.text);
     });
-    const unSources = await listen<Source[]>("ask:sources", (e) => onSources?.(e.payload));
+    const unSources = await listen<{ request: string; sources: Source[] }>("ask:sources", (e) => {
+      if (e.payload.request === request) onSources?.(e.payload.sources);
+    });
+    const unSaved = await listen<{ request: string; conversation: Conversation }>("ask:saved", (e) => {
+      if (e.payload.request === request) saving?.onSaved?.(e.payload.conversation);
+    });
     try {
-      const done = await invoke<{ sources: Source[]; stats: AskStats | null }>("ask", { question, history, options });
-      return { answer, sources: done.sources, stats: done.stats };
+      const done = await invoke<Omit<AskResult, "answer">>("ask", {
+        question,
+        history,
+        options,
+        request,
+        conversation: saving?.conversation ?? null,
+        save: saving?.save ?? false,
+      });
+      return { answer, ...done };
     } finally {
       unToken();
       unSources();
+      unSaved();
     }
   }
   // Mock: sources first, then a streamed answer.
   mockAskStopped = false;
+  const mockSaved = saving?.save || saving?.conversation ? mockBeginTurn(saving?.conversation ?? null, question) : null;
+  if (mockSaved) saving?.onSaved?.(plain(mockSaved.conversation));
   await sleep(350);
   const sources = structuredClone(mockSources);
   onSources?.(sources);
@@ -300,7 +767,9 @@ export async function ask(
     onToken(chunk);
     await sleep(40);
   }
-  if (mockAskStopped) return { answer, sources };
+  if (mockAskStopped) {
+    return { answer, sources, status: "stopped", conversation: mockFinishTurn(mockSaved, answer, sources, null, "stopped") };
+  }
   // Made-up usage that grows with the conversation, like the real thing.
   const turnsSent = Math.min(history.length, 4);
   const stats: AskStats = {
@@ -312,7 +781,96 @@ export async function ask(
     turnsDropped: history.length - turnsSent,
     excerpts: sources.length,
   };
-  return { answer, sources, stats };
+  return { answer, sources, stats, status: "complete", conversation: mockFinishTurn(mockSaved, answer, sources, stats, "complete") };
+}
+
+// ---- Chat history -----------------------------------------------------------
+
+/** Preview data: conversations kept in memory. */
+const mockChats: ConversationView[] = [];
+let mockChatId = 0;
+
+function mockTitle(question: string): string {
+  const tidy = question.trim().replace(/\s+/g, " ").replace(/[?.!: ]+$/, "");
+  const cut = tidy.length > 48 ? `${tidy.slice(0, 48).replace(/\s+\S*$/, "")}…` : tidy;
+  return cut ? cut[0].toUpperCase() + cut.slice(1) : "New conversation";
+}
+
+function mockBeginTurn(conversation: string | null, question: string) {
+  const now = Date.now();
+  let view = mockChats.find((c) => c.conversation.id === conversation);
+  if (!view) {
+    view = {
+      conversation: { id: `mock-${++mockChatId}`, title: mockTitle(question), titleManual: false, createdAt: now, updatedAt: now, openedAt: now, pinned: false, archived: false, questions: 0 },
+      messages: [],
+    };
+    mockChats.push(view);
+  }
+  view.messages.push({ id: `m${now}u`, role: "user", content: question, createdAt: now, status: "complete", sources: [] });
+  const message: SavedMessage = { id: `m${now}a`, role: "assistant", content: "", createdAt: now, status: "pending", sources: [] };
+  view.messages.push(message);
+  view.conversation.questions += 1;
+  view.conversation.updatedAt = now;
+  return { conversation: view.conversation, message };
+}
+
+function mockFinishTurn(
+  saved: ReturnType<typeof mockBeginTurn> | null,
+  answer: string,
+  sources: Source[],
+  stats: AskStats | null,
+  status: "complete" | "stopped",
+): Conversation | null {
+  if (!saved) return null;
+  Object.assign(saved.message, { content: answer, sources: sources.map((s) => ({ ...s, state: "same" as const })), stats, status });
+  saved.conversation.updatedAt = Date.now();
+  return plain(saved.conversation);
+}
+
+/** The saved conversations, most recently updated first; with `query`, those that mention it. */
+export async function listConversations(query?: string): Promise<{ conversations: Conversation[]; total: number }> {
+  if (isTauri()) return invoke<{ conversations: Conversation[]; total: number }>("list_conversations", { query: query ?? null });
+  const q = (query ?? "").trim().toLowerCase();
+  const all = [...mockChats].sort((a, b) => b.conversation.updatedAt - a.conversation.updatedAt);
+  const matching = q ? all.filter((c) => c.conversation.title.toLowerCase().includes(q) || c.messages.some((m) => m.content.toLowerCase().includes(q))) : all;
+  return plain({ conversations: matching.map((c) => c.conversation), total: all.length });
+}
+
+/** One conversation in full, as it was saved. */
+export async function getConversation(id: string): Promise<ConversationView> {
+  if (isTauri()) return invoke<ConversationView>("get_conversation", { id });
+  const view = mockChats.find((c) => c.conversation.id === id);
+  if (!view) throw "That conversation no longer exists.";
+  return plain(view);
+}
+
+export async function renameConversation(id: string, title: string): Promise<Conversation> {
+  if (isTauri()) return invoke<Conversation>("rename_conversation", { id, title });
+  const view = mockChats.find((c) => c.conversation.id === id);
+  const tidy = title.trim().replace(/\s+/g, " ");
+  if (!view) throw "That conversation no longer exists.";
+  if (!tidy) throw "A conversation needs a name.";
+  Object.assign(view.conversation, { title: tidy, titleManual: true });
+  return plain(view.conversation);
+}
+
+/** Delete a conversation and its messages. Files and their index are not touched. */
+export async function deleteConversation(id: string): Promise<void> {
+  if (isTauri()) return invoke<void>("delete_conversation", { id });
+  const at = mockChats.findIndex((c) => c.conversation.id === id);
+  if (at >= 0) mockChats.splice(at, 1);
+}
+
+/** Bring the one conversation an older Loft kept in the webview's storage into the history. */
+export async function importConversation(turns: { question: string; answer: string; sources: Source[]; stats: AskStats | null; error: string }[]): Promise<Conversation> {
+  if (isTauri()) return invoke<Conversation>("import_conversation", { turns });
+  let saved: ReturnType<typeof mockBeginTurn> | null = null;
+  for (const turn of turns) {
+    saved = mockBeginTurn(saved?.conversation.id ?? null, turn.question);
+    mockFinishTurn(saved, turn.answer, turn.sources, turn.stats, "complete");
+  }
+  if (!saved) throw "There is nothing to import.";
+  return plain(saved.conversation);
 }
 
 /** Stop the answer that is currently streaming. */

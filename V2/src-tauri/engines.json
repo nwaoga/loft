@@ -1,0 +1,207 @@
+{
+  "comment": "The llama.cpp builds Loft can use, from one pinned release. `sha256` and `size` are the values GitHub publishes for each archive; a download that does not match is discarded. Written by scripts/make-engines-manifest.py (see scripts/fetch-llama.mjs); do not edit by hand.",
+  "repo": "ggml-org/llama.cpp",
+  "tag": "b12110",
+  "builds": {
+    "win-x64": {
+      "cpu": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-cpu-x64.zip",
+            "size": 24708445,
+            "sha256": "98901e327c252875accaf2d1bf364e10e868843b0b63468baad1aa945cdc5da2",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-x64.zip"
+          }
+        ]
+      },
+      "vulkan": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-vulkan-x64.zip",
+            "size": 37661146,
+            "sha256": "9732a5e48887ca54d0bfe4af4324dc85fd56cd8cda19b52df3542fa6ebe6874f",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-vulkan-x64.zip"
+          }
+        ]
+      },
+      "cuda": {
+        "optional": true,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-cuda-13.4-x64.zip",
+            "size": 169175655,
+            "sha256": "dc910a969190b5d42e189afd73117f6bbdd8dd8ed6586342c5e0b82cab62c673",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cuda-13.4-x64.zip"
+          },
+          {
+            "name": "cudart-llama-bin-win-cuda-13.4-x64.zip",
+            "size": 423535356,
+            "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/cudart-llama-bin-win-cuda-13.4-x64.zip"
+          }
+        ],
+        "note": "CUDA 13.4 for NVIDIA graphics cards; needs a current NVIDIA driver."
+      },
+      "openvino": {
+        "optional": true,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-openvino-2026.4.1-x64.zip",
+            "size": 104701796,
+            "sha256": "cfc453a35b1662572fb3e15983d1df429701abada1f8ecd72fceb7d4210bf4ba",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-openvino-2026.4.1-x64.zip"
+          }
+        ],
+        "note": "OpenVINO 2026.4.1 for Intel processors, graphics and NPUs. Experimental."
+      }
+    },
+    "win-arm64": {
+      "cpu": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-cpu-arm64.zip",
+            "size": 13197637,
+            "sha256": "f8d20fb07d0b499988ced8963afcd5ded2d2cdd9983b757fbc7e51c4abd722e8",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-arm64.zip"
+          }
+        ]
+      },
+      "vulkan": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-vulkan-arm64.zip",
+            "size": 25728494,
+            "sha256": "2be672cf538aabfc9fcb22c21648422b01d623673f15c2742bd43a9bd1a11ce2",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-vulkan-arm64.zip"
+          }
+        ]
+      },
+      "cuda": {
+        "optional": true,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-win-cuda-13.4-arm64.zip",
+            "size": 156812884,
+            "sha256": "b981f7b4d73d61459e3a4f9785f15f573277587aaa98ffc4b03c055c4f64135f",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cuda-13.4-arm64.zip"
+          },
+          {
+            "name": "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+            "size": 153262407,
+            "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/cudart-llama-bin-win-cuda-13.4-arm64.zip"
+          }
+        ],
+        "note": "CUDA 13.4 for NVIDIA graphics cards; needs a current NVIDIA driver."
+      }
+    },
+    "mac-arm64": {
+      "metal": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-macos-arm64.tar.gz",
+            "size": 16650691,
+            "sha256": "4f5b8de12e0b9516658ca6a5764c6ffb3d7c659c3dd538556b1413c7b4050662",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-macos-arm64.tar.gz"
+          }
+        ]
+      }
+    },
+    "mac-x64": {
+      "cpu": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-macos-x64.tar.gz",
+            "size": 12388601,
+            "sha256": "c8094268b6bf62f4998f0e45656fd9f5e2d4afb6b1cd0044d761db64be1dd47d",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-macos-x64.tar.gz"
+          }
+        ]
+      }
+    },
+    "linux-x64": {
+      "cpu": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-x64.tar.gz",
+            "size": 23051958,
+            "sha256": "368227edcc229be5f9bed16a2223d79b5e41d0ac2e19bcf5825e82291c060e55",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-x64.tar.gz"
+          }
+        ]
+      },
+      "vulkan": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-vulkan-x64.tar.gz",
+            "size": 35858360,
+            "sha256": "a5d741940956ec62e8783aee7e5a4c7c761af867d6f027c3277a51e1a3ac59b0",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-vulkan-x64.tar.gz"
+          }
+        ]
+      },
+      "cuda": {
+        "optional": true,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-cuda-13.4-x64.tar.gz",
+            "size": 168275993,
+            "sha256": "2afd2ca540da119570b1dac36b5a2c862bb03a3b789c46661dfa55e600f5b19b",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-cuda-13.4-x64.tar.gz"
+          },
+          {
+            "name": "cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64.tar.gz",
+            "size": 440232657,
+            "sha256": "9b1110161943882ec85c8e9ae641075ee8c962a50f8f1e36534ee65ea1e56ed9",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64.tar.gz"
+          }
+        ],
+        "note": "CUDA 13.4 for NVIDIA graphics cards; needs a current NVIDIA driver."
+      },
+      "openvino": {
+        "optional": true,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-openvino-2026.4.1-x64.tar.gz",
+            "size": 122628360,
+            "sha256": "24452bedfc5a0e0ebcc33e8acdefd0e89140e399d712780e1c8c49f15eac74e8",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-openvino-2026.4.1-x64.tar.gz"
+          }
+        ],
+        "note": "OpenVINO 2026.4.1 for Intel processors, graphics and NPUs. Experimental."
+      }
+    },
+    "linux-arm64": {
+      "cpu": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-arm64.tar.gz",
+            "size": 18723578,
+            "sha256": "4758b51335e37b4346251f2687d64841ff1c07ecb27fc46323945bb2ec9c44d2",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-arm64.tar.gz"
+          }
+        ]
+      },
+      "vulkan": {
+        "optional": false,
+        "archives": [
+          {
+            "name": "llama-b12110-bin-ubuntu-vulkan-arm64.tar.gz",
+            "size": 29168359,
+            "sha256": "1c68bf23d35230cc607e3d30f8d447d21fef500d9fa8d65e15520dfa3619ad73",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-vulkan-arm64.tar.gz"
+          }
+        ]
+      }
+    }
+  }
+}

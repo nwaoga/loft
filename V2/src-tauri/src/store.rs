@@ -370,6 +370,16 @@ impl Store {
     }
 
     /// True when `path` is a file currently in the index.
+    /// The content hash of the indexed file at `path`, if it is indexed.
+    /// (Chat history records it with a citation, to tell later whether the
+    /// file is still the one that was cited.)
+    pub fn file_hash(&self, path: &str) -> Result<Option<String>, String> {
+        self.conn
+            .query_row("SELECT hash FROM files WHERE path = ?1 LIMIT 1", [path], |r| r.get(0))
+            .optional()
+            .map_err(e)
+    }
+
     pub fn is_indexed(&self, path: &str) -> Result<bool, String> {
         self.conn
             .query_row("SELECT 1 FROM files WHERE path = ?1 LIMIT 1", [path], |_| Ok(()))

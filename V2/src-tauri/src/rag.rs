@@ -768,8 +768,13 @@ pub async fn stream_chat(
             }
         }
     }
-    // Ended without the closing marker (stopped, or the connection dropped).
-    Ok(ChatOutput { text: answer, usage: None })
+    if cancel() {
+        // Stopped by the user: what arrived so far is the answer.
+        return Ok(ChatOutput { text: answer, usage: None });
+    }
+    // The stream ended without its closing marker: the server went away in
+    // the middle of the answer. Say so rather than pass off a truncated one.
+    Err("the chat model stopped before it finished the answer".into())
 }
 
 // ------------------------------- pipeline ----------------------------------
