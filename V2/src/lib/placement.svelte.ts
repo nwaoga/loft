@@ -1,6 +1,9 @@
 // Which screen edge the notch hangs from. The backend owns the setting (it
 // has to place the window before the UI exists) and saves it; the UI mirrors
 // it as `data-placement` on <html>, which the layout in App.svelte keys off.
+//
+// A floating window (see window-style.svelte.ts) hangs from no edge: it is
+// laid out like the top placement whatever edge is saved for the notch.
 
 import { getPlacement, setPlacement } from "./api";
 import { ui } from "./state.svelte";
@@ -14,9 +17,17 @@ export const PLACEMENTS: { id: Placement; name: string; hint: string }[] = [
 
 export const placement = $state({ value: "top" as Placement });
 
+let floating = false;
+
 function apply(value: Placement) {
   placement.value = value;
-  document.documentElement.dataset.placement = value;
+  document.documentElement.dataset.placement = floating ? "top" : value;
+}
+
+/** The window style changed: lay out for the saved edge, or for no edge. */
+export function syncPlacement(isFloating: boolean) {
+  floating = isFloating;
+  apply(placement.value);
 }
 
 /** Read the saved placement. Called once, before the UI is mounted. */

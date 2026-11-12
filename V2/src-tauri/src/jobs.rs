@@ -226,6 +226,9 @@ async fn run_job(app: &AppHandle, folder_id: i64, force: bool, cancel: Arc<Atomi
     if cancel.load(Ordering::Relaxed) {
         return;
     }
+    // An indexing run keeps the embedding server where it is: a change of
+    // engine waits until the run has ended.
+    let _busy = crate::engine::begin(app, &[crate::inference::Engine::Embed]);
     let (store, folder) = {
         let state = app.state::<AppState>();
         let folder = state.store.lock().unwrap().folder(folder_id).ok().flatten();

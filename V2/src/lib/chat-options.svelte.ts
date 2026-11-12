@@ -37,7 +37,7 @@ export const DEFAULTS: ChatOptions = {
   filesOnly: true,
   stream: true,
   remember: true,
-  history: "session",
+  history: "local",
   temperature: 0.2,
   maxTokens: 1024,
 };
@@ -57,10 +57,10 @@ export const SOURCE_PANELS: { id: SourcePanel; name: string; hint: string }[] = 
   { id: "expanded", name: "Always expanded", hint: "" },
   { id: "collapsed", name: "Collapsed by default", hint: "" },
 ];
-export const HISTORIES: { id: ChatHistory; name: string }[] = [
-  { id: "none", name: "Don't save" },
-  { id: "session", name: "Current session only" },
-  { id: "local", name: "Save locally" },
+export const HISTORIES: { id: ChatHistory; name: string; hint?: string }[] = [
+  { id: "local", name: "Save locally", hint: "kept in the chat history" },
+  { id: "session", name: "Current session only", hint: "until Loft quits" },
+  { id: "none", name: "Don't save", hint: "forgotten when the panel closes" },
 ];
 export const MAX_TOKENS: { value: number; name: string }[] = [
   { value: 256, name: "Short" },
@@ -70,6 +70,10 @@ export const MAX_TOKENS: { value: number; name: string }[] = [
 ];
 
 const KEY = "loft.chatOptions";
+// Saving conversations became the default when the chat history arrived.
+// Options saved before then say "session" only because that was the default,
+// so they are moved to the new default once; a later choice is kept.
+const HISTORY_DEFAULT_APPLIED = "loft.chatHistoryDefault";
 
 /** Saved options, with anything missing or invalid replaced by its default. */
 function load(): ChatOptions {
@@ -78,6 +82,14 @@ function load(): ChatOptions {
     saved = JSON.parse(localStorage.getItem(KEY) ?? "{}") ?? {};
   } catch {
     /* unreadable or unavailable: defaults */
+  }
+  try {
+    if (localStorage.getItem(HISTORY_DEFAULT_APPLIED) === null) {
+      localStorage.setItem(HISTORY_DEFAULT_APPLIED, "1");
+      if (saved.history === "session") delete saved.history;
+    }
+  } catch {
+    /* storage unavailable: the defaults apply anyway */
   }
   const pick = <T,>(value: unknown, allowed: readonly T[], fallback: T): T =>
     allowed.includes(value as T) ? (value as T) : fallback;

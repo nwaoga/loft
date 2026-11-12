@@ -3,10 +3,12 @@ import "./app.css";
 import App from "./App.svelte";
 import { initTheme } from "./lib/theme.svelte";
 import { initPlacement } from "./lib/placement.svelte";
+import { initWindowStyle } from "./lib/window-style.svelte";
 
-// Both are applied before the first paint, so the notch never flashes the
-// default theme or appears at the wrong edge of its (transparent) window.
+// All three are applied before the first paint, so Loft never flashes the
+// default theme, appears at the wrong edge of its (transparent) window, or
+// shows a notch where a floating window was chosen.
 initTheme();
-initPlacement().finally(() => {
+Promise.allSettled([initPlacement(), initWindowStyle()]).then(() => {
   mount(App, { target: document.getElementById("app")! });
 });

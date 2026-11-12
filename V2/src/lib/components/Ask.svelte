@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { tick } from "svelte";
-  import { ask, cancelAsk, openSource } from "../api";
+  import { onMount, tick } from "svelte";
+  import { ask, cancelAsk, getConversation, importConversation, openSource } from "../api";
   import { ui, type Tab } from "../state.svelte";
-  import type { AskStats, Source } from "../types";
+  import type { AskStats, Conversation, MessageStatus, SavedMessage, Source } from "../types";
   import { fileTag } from "../format";
   import { chatOptions, answerOptions, chatOptionsChanged } from "../chat-options.svelte";
   import Icon from "./Icon.svelte";
   import ChatOptions from "./ChatOptions.svelte";
+  import History from "./History.svelte";
 
   let {
     ready = true,
@@ -28,15 +29,25 @@
     /** Context usage of this answer, once it has finished. */
     stats: AskStats | null;
     error: string;
+    /** How the answer ended; null while it is being written. Only "complete" is a finished answer. */
+    status: MessageStatus | null;
+    /** Set when the turn could not be saved in the chat history. */
+    saveNote: string;
   }
 
-  // The conversation. Each new question is sent with the turns before it, so
-  // a follow-up ("and when does it start?") is understood. "New chat" clears it.
-  // (Declared before `turns`, which is restored from here at start-up.)
-  const CHAT_KEY = "loft.chat";
-  const MAX_SAVED_TURNS = 40;
+  // The conversation on screen. Each new question is sent with the turns
+  // before it, so a follow-up ("and when does it start?") is understood; the
+  // answer engine then uses only the last few of them, within a budget. What
+  // is shown (and saved) is the whole conversation; what the model is sent
+  // is not.
   let nextId = 0;
-  let turns = $state<TurnView[]>(savedChat());
+  let turns = $state<TurnView[]>([]);
+  /** The saved conversation these turns belong to; null = not saved (yet). */
+  let conversation = $state<Conversation | null>(null);
+  /** Counts each time the conversation on screen is replaced, so that an
+   *  answer which ends afterwards cannot attach itself to the new one. */
+  let chatSession = 0;
+  let historyOpen = $state(false);
   let question = $state("");
   let openError = $state("");
   let inputEl: HTMLTextAreaElement | undefined = $state();
@@ -60,44 +71,112 @@
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  // Chat history option. "Save locally" keeps the conversation in the
-  // webview's local storage and brings it back at the next launch; "Don't
-  // save" forgets it whenever the panel is closed; otherwise it lasts until
-  // Loft quits.
-  function savedChat(): TurnView[] {
-    if (chatOptions.history !== "local") return [];
+  // Chat history option. "Save locally" keeps every conversation in the chat
+  // history (a database on this computer), where it can be found, resumed,
+  // renamed and deleted. Otherwise a new conversation lasts until Loft quits,
+  // or with "Don't save" only until the panel is closed. A conversation that
+  // was opened from the history goes on being saved either way.
+  const saving = $derived(chatOptions.history === "local");
+  const ACTIVE_KEY = "loft.activeConversation";
+  /** Where an older Loft kept its one saved conversation. */
+  const OLD_CHAT_KEY = "loft.chat";
+
+  /** Note which conversation is open, to reopen it at the next launch. */
+  function remember(id: string | null) {
     try {
-      const saved = JSON.parse(localStorage.getItem(CHAT_KEY) ?? "[]");
-      if (!Array.isArray(saved)) return [];
-      return saved
-        .filter((t) => t && typeof t.question === "string" && typeof t.answer === "string")
-        .map((t) => ({
-          id: nextId++,
-          question: t.question,
-          answer: t.answer,
-          sources: Array.isArray(t.sources) ? t.sources : [],
-          sourcesOpen: null,
-          stats: t.stats ?? null,
-          error: typeof t.error === "string" ? t.error : "",
-        }));
+      if (id) localStorage.setItem(ACTIVE_KEY, id);
+      else localStorage.removeItem(ACTIVE_KEY);
     } catch {
-      return [];
+      /* not remembered: Loft just starts with a fresh chat */
     }
   }
-  $effect(() => {
-    try {
-      if (chatOptions.history !== "local") {
-        localStorage.removeItem(CHAT_KEY);
-      } else if (!ui.asking) {
-        const keep = turns.slice(-MAX_SAVED_TURNS).map(({ question, answer, sources, stats, error }) => ({ question, answer, sources, stats, error }));
-        localStorage.setItem(CHAT_KEY, JSON.stringify(keep));
+
+  /** Saved messages as the turns shown: each question with the answer after it. */
+  function turnsOf(messages: SavedMessage[]): TurnView[] {
+    const shown: TurnView[] = [];
+    for (const m of messages) {
+      if (m.role === "user") {
+        shown.push({ id: nextId++, question: m.content, answer: "", sources: [], sourcesOpen: null, stats: null, error: "", status: null, saveNote: "" });
+      } else if (shown.length) {
+        const t = shown[shown.length - 1];
+        t.answer = m.content;
+        t.sources = m.sources;
+        t.stats = m.stats ?? null;
+        t.status = m.status;
+        t.error = m.status === "failed" ? m.error || "This answer could not be written." : "";
       }
-    } catch {
-      /* storage unavailable: the conversation simply is not kept */
     }
+    return shown;
+  }
+
+  /** Put a fresh, unsaved conversation on screen. Nothing saved is deleted. */
+  function freshChat() {
+    chatSession++;
+    turns = [];
+    conversation = null;
+    remember(null);
+    openError = "";
+  }
+
+  /**
+   * Open a saved conversation, exactly as it was saved (nothing is asked of
+   * the model), ready for a follow-up. Not while an answer is being written:
+   * that answer belongs to the conversation on screen.
+   */
+  async function openConversation(id: string, quiet = false) {
+    if (busy) return;
+    try {
+      const view = await getConversation(id);
+      chatSession++;
+      turns = turnsOf(view.messages);
+      conversation = view.conversation;
+      remember(id);
+      openError = "";
+      historyOpen = false;
+      stick = true;
+      await tick();
+      if (threadEl) threadEl.scrollTop = threadEl.scrollHeight;
+      inputEl?.focus();
+    } catch (e) {
+      remember(null);
+      if (!quiet) {
+        openError = String(e);
+        historyOpen = false;
+      }
+    }
+  }
+
+  onMount(async () => {
+    // Once: bring the conversation an older Loft kept in the webview's
+    // storage into the chat history. (Left in place if that fails.)
+    try {
+      const old = JSON.parse(localStorage.getItem(OLD_CHAT_KEY) ?? "null");
+      const kept = (Array.isArray(old) ? old : [])
+        .filter((t) => t && typeof t.question === "string" && typeof t.answer === "string")
+        .map((t) => ({
+          question: t.question as string,
+          answer: t.answer as string,
+          sources: Array.isArray(t.sources) ? (t.sources as Source[]) : [],
+          stats: (t.stats ?? null) as AskStats | null,
+          error: typeof t.error === "string" ? t.error : "",
+        }));
+      if (kept.length) remember((await importConversation(kept)).id);
+      localStorage.removeItem(OLD_CHAT_KEY);
+    } catch {
+      /* try again next time */
+    }
+    // Carry on where the last session left off.
+    let last: string | null = null;
+    try {
+      last = saving ? localStorage.getItem(ACTIVE_KEY) : null;
+    } catch {
+      /* storage unavailable */
+    }
+    if (last && !turns.length) await openConversation(last, true);
   });
+
   $effect(() => {
-    if (chatOptions.history === "none" && !ui.expanded && !ui.asking && turns.length) turns = [];
+    if (chatOptions.history === "none" && !ui.expanded && !ui.asking && turns.length) freshChat();
   });
 
   /** Whether a turn's sources drawer is open, given the "Source panel" option. */
@@ -120,8 +199,11 @@
     const history = chatOptions.remember
       ? turns.filter((t) => t.answer.trim() && !t.error).map((t) => ({ question: t.question, answer: t.answer }))
       : [];
-    turns.push({ id: nextId++, question: q, answer: "", sources: [], sourcesOpen: null, stats: null, error: "" });
+    turns.push({ id: nextId++, question: q, answer: "", sources: [], sourcesOpen: null, stats: null, error: "", status: null, saveNote: "" });
     const turn = turns[turns.length - 1];
+    // The answer belongs to the conversation that is on screen now. If that
+    // is replaced before it ends (New chat), it must not follow.
+    const mine = chatSession;
     question = "";
     openError = "";
     stick = true;
@@ -142,23 +224,39 @@
           }
         },
         (found) => (turn.sources = found),
+        {
+          conversation: conversation?.id ?? null,
+          save: saving,
+          // The question is stored before the answer starts: from here on
+          // this is a saved conversation with a name.
+          onSaved: (saved) => {
+            if (mine !== chatSession) return;
+            conversation = saved;
+            remember(saved.id);
+          },
+        },
       );
       if (!stream) turn.answer = held;
       turn.sources = res.sources;
       turn.stats = res.stats ?? null;
+      turn.status = res.status ?? "complete";
+      turn.saveNote = res.saveError ?? "";
+      if (res.conversation && mine === chatSession) conversation = res.conversation;
     } catch (e) {
       if (!stream) turn.answer = held;
       turn.error = String(e);
+      turn.status = "failed";
     } finally {
       writing = false;
       ui.asking = false;
     }
   }
 
+  /** Start over. The conversation left behind stays in the chat history. */
   async function newChat() {
     if (busy) await cancelAsk();
-    turns = [];
-    openError = "";
+    freshChat();
+    historyOpen = false;
     inputEl?.focus();
   }
 
@@ -274,6 +372,31 @@
 </script>
 
 <div class="ask">
+  <!-- Which conversation this is, and the way to the others. -->
+  <div class="chat-bar">
+    <button
+      class="bar-btn"
+      class:on={historyOpen}
+      onclick={() => (historyOpen = !historyOpen)}
+      aria-label="Conversations"
+      aria-expanded={historyOpen}
+      title="Conversations: browse, search and resume"
+    >
+      <Icon name="history" size={14} />
+    </button>
+    {#if conversation}
+      <button class="chat-title" onclick={() => (historyOpen = true)} title="{conversation.title} — open conversations">{conversation.title}</button>
+    {:else}
+      <span class="chat-title unsaved">{turns.length && !saving ? "Not being saved" : "New conversation"}</span>
+    {/if}
+    {#if turns.length}
+      <button class="new-chat" onclick={newChat} title="Start a fresh conversation. This one stays in the history.">
+        <Icon name="plus" size={12} stroke={2.4} />
+        New chat
+      </button>
+    {/if}
+  </div>
+
   <div class="thread scroll" bind:this={threadEl} onscroll={onThreadScroll}>
     {#if turns.length === 0 && !hint}
       <div class="examples">
@@ -301,10 +424,17 @@
             {#if t.answer}
               <p>{t.answer}{#if last && busy}<span class="caret"></span>{/if}</p>
             {:else if !(last && busy)}
-              <p class="stopped">Stopped before an answer.</p>
+              <p class="stopped">{t.status === "interrupted" ? "Loft was closed before an answer was written." : "Stopped before an answer."}</p>
+            {/if}
+            <!-- Text that is not a finished answer says so. -->
+            {#if t.answer && t.status === "stopped"}
+              <p class="turn-note">Stopped before it was finished.</p>
+            {:else if t.answer && t.status === "interrupted"}
+              <p class="turn-note">Loft was closed before this answer was finished.</p>
             {/if}
           </div>
         {/if}
+        {#if t.saveNote}<p class="turn-note warn">{t.saveNote}</p>{/if}
 
         {#if t.sources.length && chatOptions.showCitations}
           {@const isOpen = sourcesOpen(t, last)}
@@ -328,11 +458,19 @@
               <div class="source-list">
                 {#each t.sources as s}
                   {@const tag = fileTag(s.file)}
-                  <button class="source card" title={s.path} onclick={() => open(s)}>
+                  <!-- A citation in a saved conversation is shown as it was. If its
+                       file has gone since, it says so and opens nothing. -->
+                  <button
+                    class="source card"
+                    class:gone={s.state === "missing"}
+                    disabled={s.state === "missing"}
+                    title={s.state === "missing" ? `${s.path}\nThis file is no longer in your indexed folders, so it cannot be opened from here.` : s.path}
+                    onclick={() => open(s)}
+                  >
                     <span class="tag tone-{tag.tone}">{tag.label}</span>
                     <span class="source-main">
                       <span class="source-head">
-                        <span class="source-file">{s.file}{#if s.location}<span class="page">· {s.location}</span>{/if}</span>
+                        <span class="source-file">{s.file}{#if s.location}<span class="page">· {s.location}</span>{/if}{#if s.state === "missing"}<span class="file-state">· no longer available</span>{:else if s.state === "changed"}<span class="file-state">· changed since</span>{/if}</span>
                         <span class="score" title="How closely this excerpt matches your question">{Math.round(s.score * 100)}%</span>
                       </span>
                       <span class="snippet">{s.snippet}</span>
@@ -408,15 +546,27 @@
         {:else}
           <span>{chatOptions.remember ? "Follow-ups continue this conversation" : "Each question is answered on its own"}</span>
         {/if}
-        <button class="new-chat" onclick={newChat} title="Start over: the next question will not refer to this conversation">
-          <Icon name="plus" size={12} stroke={2.4} />
-          New chat
-        </button>
       </div>
     {/if}
   </div>
   {#if optionsOpen}
     <ChatOptions onclose={() => (optionsOpen = false)} />
+  {/if}
+  {#if historyOpen}
+    <History
+      activeId={conversation?.id ?? null}
+      {busy}
+      {saving}
+      onopen={(id) => (id === conversation?.id ? (historyOpen = false) : openConversation(id))}
+      onnew={newChat}
+      onclose={() => (historyOpen = false)}
+      onrenamed={(renamed) => {
+        if (conversation?.id === renamed.id) conversation = renamed;
+      }}
+      ondeleted={(id) => {
+        if (conversation?.id === id) freshChat();
+      }}
+    />
   {/if}
 </div>
 
@@ -429,6 +579,74 @@
     gap: 10px;
     height: 100%;
     min-height: 0;
+  }
+  /* Which conversation this is: history, its name, New chat. */
+  .chat-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 24px;
+    margin: -4px 0 -4px -3px;
+  }
+  .bar-btn {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    color: var(--text-dim);
+    transition:
+      background 0.13s ease,
+      color 0.13s ease;
+  }
+  .bar-btn:hover,
+  .bar-btn.on {
+    color: var(--text);
+    background: var(--field-bg-hover);
+  }
+  .chat-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 3px 6px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  button.chat-title:hover {
+    color: var(--text);
+    background: var(--field-bg-hover);
+  }
+  .chat-title.unsaved {
+    font-weight: 500;
+    color: var(--text-faint);
+  }
+  .chat-bar .new-chat {
+    margin-left: auto;
+  }
+  .turn-note {
+    font-size: 11.5px;
+    font-style: italic;
+    color: var(--text-faint);
+  }
+  .turn-note.warn {
+    font-style: normal;
+    color: var(--warn);
+  }
+  .source.gone {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .file-state {
+    margin-left: 5px;
+    font-weight: 500;
+    color: var(--warn);
   }
   .thread {
     flex: 1;

@@ -4,7 +4,9 @@
   import { ui } from "../state.svelte";
   import { THEMES, theme, setTheme } from "../theme.svelte";
   import { PLACEMENTS, placement, choosePlacement, type Placement } from "../placement.svelte";
+  import { STYLES, windowStyle, chooseStyle, chooseTrayOnly, type WindowStyle } from "../window-style.svelte";
   import Models from "./Models.svelte";
+  import Performance from "./Performance.svelte";
   import Icon from "./Icon.svelte";
 
   let autostart = $state(false);
@@ -49,6 +51,26 @@
     }
   }
 
+  async function pickStyle(value: WindowStyle) {
+    placementError = "";
+    try {
+      await chooseStyle(value);
+    } catch (e) {
+      placementError = String(e);
+    }
+  }
+
+  let trayError = $state("");
+  async function toggleTray() {
+    trayError = "";
+    try {
+      await chooseTrayOnly(!windowStyle.trayOnly);
+    } catch (e) {
+      trayError = String(e);
+    }
+  }
+  const hotkey = /mac/i.test(navigator.platform) ? "Cmd+Shift+Space" : "Ctrl+Shift+Space";
+
   async function toggleAutostart() {
     autostartError = "";
     try {
@@ -83,7 +105,28 @@
   </section>
 
   <section>
-    <div class="section-label">Placement and display</div>
+    <div class="section-label">Window</div>
+    <div class="styles" role="radiogroup" aria-label="Style">
+      {#each STYLES as s (s.id)}
+        <button
+          class="style-choice"
+          class:selected={windowStyle.value === s.id}
+          role="radio"
+          aria-checked={windowStyle.value === s.id}
+          onclick={() => pickStyle(s.id)}
+        >
+          <!-- A little screen with Loft drawn on it in that style. -->
+          <span class="screen {s.id}" aria-hidden="true"><i></i></span>
+          <span class="place-text">
+            <span class="place-name">{s.name}</span>
+            <span class="place-sub">{s.hint}</span>
+          </span>
+        </button>
+      {/each}
+    </div>
+    {#if windowStyle.value === "floating"}
+      <p class="window-help">Drag Loft by its pill, or by the top of its panel, to put it anywhere. It stays where you leave it.</p>
+    {:else}
     <div class="placements" role="radiogroup" aria-label="Placement">
       {#each PLACEMENTS as p (p.id)}
         <button
@@ -119,11 +162,39 @@
         {/each}
       </div>
     {/if}
+    {/if}
     {#if placementError}<div class="note">{placementError}</div>{/if}
+
+    <div class="row card">
+      <div class="row-text">
+        <div class="row-title">Live in the tray</div>
+        <div class="row-sub">
+          Nothing stays on screen. Open Loft from its tray icon (the menu bar on a Mac) or with {hotkey}.
+        </div>
+      </div>
+      <button
+        class="switch"
+        class:on={windowStyle.trayOnly}
+        role="switch"
+        aria-checked={windowStyle.trayOnly}
+        aria-label="Live in the tray"
+        disabled={!windowStyle.trayAvailable}
+        onclick={toggleTray}
+      ><span></span></button>
+    </div>
+    {#if !windowStyle.trayAvailable}
+      <div class="note">This desktop gave Loft no tray icon to live in, so it stays on screen.</div>
+    {:else if trayError}
+      <div class="note">{trayError}</div>
+    {/if}
   </section>
 
   <section>
     <Models />
+  </section>
+
+  <section>
+    <Performance />
   </section>
 
   <section>
@@ -235,12 +306,39 @@
     color: var(--text);
   }
 
-  /* Placement picker */
+  /* Style and placement pickers */
+  .styles,
   .placements {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 8px;
   }
+  .window-help {
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--text-faint);
+    margin: -2px 2px 0;
+  }
+  .switch:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .screen.notch i {
+    top: 0;
+    left: 50%;
+    width: 16px;
+    height: 5px;
+    transform: translateX(-50%);
+    border-radius: 0 0 3px 3px;
+  }
+  .screen.floating i {
+    top: 7px;
+    left: 9px;
+    width: 18px;
+    height: 12px;
+    border-radius: 3px;
+  }
+  .style-choice,
   .placement {
     display: flex;
     align-items: center;
@@ -254,9 +352,11 @@
       background 0.15s ease,
       border-color 0.15s ease;
   }
+  .style-choice:hover,
   .placement:hover {
     background: var(--field-bg-hover);
   }
+  .style-choice.selected,
   .placement.selected {
     border-color: color-mix(in srgb, var(--accent) 60%, transparent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -273,6 +373,7 @@
     position: absolute;
     background: var(--text-dim);
   }
+  .style-choice.selected .screen i,
   .placement.selected .screen i {
     background: var(--accent);
   }
