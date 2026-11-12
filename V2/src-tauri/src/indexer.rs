@@ -499,9 +499,10 @@ mod tests {
         // --- first pass: everything is new ---
         let (summary, last) = run(store.clone(), embed.clone(), dir.clone()).await;
         eprintln!("first pass: {summary:?}");
-        assert_eq!(summary.indexed, 6);
+        // The image is tracked even when its invalid bytes yield no OCR text.
+        assert_eq!(summary.indexed, 7);
         assert_eq!(summary.failed, 0);
-        assert_eq!((last.done, last.total), (6, 6));
+        assert_eq!((last.done, last.total), (7, 7));
         assert!(summary.chunks > 10, "the long file should produce many chunks");
 
         // --- every format is retrievable ---
@@ -525,14 +526,14 @@ mod tests {
         // --- second pass: nothing changed, nothing re-embedded ---
         let (summary, _) = run(store.clone(), embed.clone(), dir.clone()).await;
         eprintln!("second pass: {summary:?}");
-        assert_eq!((summary.indexed, summary.unchanged, summary.removed), (0, 6, 0));
+        assert_eq!((summary.indexed, summary.unchanged, summary.removed), (0, 7, 0));
 
         // --- edit one file, delete another ---
         std::fs::write(dir.join("notes.md"), "# Garden log\n\nThe beehive was relocated next to the orchard in June.\n").unwrap();
         std::fs::remove_file(dir.join("deck.pptx")).unwrap();
         let (summary, _) = run(store.clone(), embed.clone(), dir.clone()).await;
         eprintln!("third pass: {summary:?}");
-        assert_eq!((summary.indexed, summary.unchanged, summary.removed), (1, 4, 1));
+        assert_eq!((summary.indexed, summary.unchanged, summary.removed), (1, 5, 1));
 
         let q = crate::embed::embed_one(port, "search_query: where is the beehive").await.unwrap();
         let hits = store.lock().unwrap().search(&q, 3).unwrap();

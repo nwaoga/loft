@@ -32,6 +32,14 @@
     }
     throw new Error("timed out waiting for " + what);
   };
+  const waitForAsync = async (fn, ms, what) => {
+    const t = Date.now();
+    while (Date.now() - t < ms) {
+      if (await fn()) return;
+      await sleep(250);
+    }
+    throw new Error("timed out waiting for " + what);
+  };
   const tab = (name) => $$("header.tabs button").find((b) => text(b) === name).click();
   const type = (q) => {
     const ta = $("textarea");
@@ -177,6 +185,11 @@
       tab("Ask");
       await sleep(300);
     }
+    await waitForAsync(
+      async () => (await invoke("list_folders")).some((f) => f.path.endsWith(SAMPLE) && f.status === "ready" && f.chunkCount > 0),
+      120000,
+      "the sample folder to be searchable",
+    );
 
     // --- Ask: a question the sample folder answers (first one after launch, then again)
     let ms = await askAndWait("Who owns the supplier contract?");

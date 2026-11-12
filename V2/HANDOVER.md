@@ -1,14 +1,12 @@
-# Loft V2 — handover for verification on other systems
+# Loft V2 — verification handover
 
-This branch adds three things to Loft V2. Everything in it was built and tested on **one
-Windows 11 laptop**. This document is for whoever (or whichever agent) verifies it elsewhere:
-what exists, what was actually run and where, what was not, how to run the tests, and where to
-look when something differs.
+This document records what Loft V2 does, what was actually tested on two Windows 11 laptops,
+what remains unverified, how to run the tests, and where to look when something differs.
 
 Read [README.md](README.md) for what Loft is and how it is used, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it is put together. This file does not repeat them.
 
-## 1. What is in this branch
+## 1. What is in V2
 
 | Piece | What it does | Main files |
 |---|---|---|
@@ -54,16 +52,62 @@ What the real optional engines did there (details in the README):
   card but dies at start on it. Its `--list-devices` prints nothing on this build, so Loft
   reads its devices from the engine's refusal of a non-existent device.
 
-## 3. What was NOT verified
+### Second Windows machine — 12 November 2026
 
-This is the list to work through. Nothing below has been run by anyone.
+Windows 11, Intel Core Ultra 9 386H, Intel Graphics, NVIDIA GeForce RTX 5070 Ti Laptop GPU,
+Intel AI Boost (NPU 5010, driver 32.0.100.4841), 31.5 GB RAM, one display. The real-model
+tests used Qwen 2.5 3B Instruct Q4_K_M and Nomic Embed Text v1.5 F16, both verified against
+the catalog hashes. The user's normal Llama 3.2 3B / EmbeddingGemma selection was left alone;
+the smoke tests used a separate profile under `%TEMP%\loft-smoke-profile`.
 
-**Hardware not available**
+| Check | Result on this machine |
+|---|---|
+| `npm run check`; `npm run build` | passed; Svelte reported 0 errors and 0 warnings |
+| `cargo test --lib` | 84 passed, 10 ignored |
+| `models::tests::installed_models_match_catalog` | passed for all four installed chat/embedding model files |
+| `runtime::tests::engines_on_this_computer_are_discovered` | passed; Intel NPU and both GPUs detected; NVIDIA Vulkan chosen automatically |
+| `rag::tests::end_to_end`; `indexer::tests::end_to_end` | passed with Qwen/Nomic; the indexing test's expected counts were updated to include a tracked picture with no OCR text |
+| `runtime::tests::each_target_runs_where_it_is_told` | passed: CPU only, Intel Vulkan and NVIDIA Vulkan each confirmed from the server log |
+| `scripts\win-smoke.bat` | `[dev] 17 DONE`; the test now waits for the sample folder to be searchable before asking |
+| `scripts\win-smoke.bat smoke-restart.js` | `[dev] R-DONE`; saved history, sources, usage and stopped answers survived restart |
+| `scripts\win-smoke.bat smoke-engines.js` | `[dev] E-DONE`; NPU trial verified a real answer. The performance assertion now records explained OpenVINO failures without failing standard engines. |
+| `cargo fmt --check` | fails on widespread pre-existing Rust formatting differences; no repository-wide reformat was made |
 
-- **An NPU.** No model has been run on one. The whole NPU path (device found, launch
-  settings, log check, errors) is tested only against llama.cpp's documented output and a
-  real OpenVINO engine on other devices. On a Core Ultra machine with the Intel NPU driver:
-  Settings, Performance & battery, *Try NPU now*.
+The plugged-in performance test used the same Qwen file and prompt for every target. These
+figures are one run, not a cross-machine ranking:
+
+| Target | Tokens/s | Load | Peak server working set |
+|---|---:|---:|---:|
+| NVIDIA Vulkan | 121.9 | 2.3 s | 3,004 MiB |
+| Intel Vulkan | 31.1 | 1.6 s | 3,504 MiB |
+| CPU only | 26.0 | 2.4 s | 4,398 MiB |
+| Intel Graphics OpenVINO | 16.3 | 10.4 s | 8,663 MiB |
+| Intel NPU OpenVINO | 13.7 | 44.7 s | 7,152 MiB |
+| Intel CPU OpenVINO | 9.6 | 12.1 s | 9,097 MiB |
+| NVIDIA OpenVINO | failed to load; Loft explained to use CUDA or Vulkan | — | — |
+
+*Try NPU now* also answered on the Intel NPU at about 13 tokens/s, with the device confirmed
+from OpenVINO's log. During an earlier Llama 3.2 NPU trial, Windows showed about 30 GB of
+31.5 GB RAM in use system-wide; the OpenVINO server's working set was 8.3 GB at inspection.
+The 30 GB figure must not be attributed to the NPU server alone. Energy was not measured:
+the laptop stayed plugged in. CUDA, the optional-engine installer smoke test, and the picture
+description model were not exercised on this machine.
+
+**Open retrieval issue:** With the user's Llama 3.2 / EmbeddingGemma pair, both smoke scripts
+stopped at their first sourced-answer check. The seven sample files and vectors were indexed,
+but the supplier-contract question returned "I couldn't find that in your indexed files" with
+no sources, including after the index-ready wait. The same scripts passed with Qwen/Nomic.
+Investigate EmbeddingGemma retrieval scores and the shared similarity threshold before
+claiming that pair works for this sample corpus.
+
+## 3. What remains unverified
+
+This is the list to work through beyond the two Windows machines above.
+
+**Hardware and power**
+
+- **Other NPUs and drivers.** Qwen 2.5 3B ran on one Intel NPU 5010 as recorded above;
+  compatibility and memory use on other hardware remain unknown.
 - **AMD graphics**, a machine with **one GPU**, a machine with **none**, **Windows on ARM**.
 - **Really running on battery.** Power changes were simulated (`dev_set_power`). The Windows
   power notification is registered but the charger was never pulled, and no energy figure
@@ -150,6 +194,8 @@ models are up, and the script reports through the `dev_log` command. Each step p
 | `smoke-optional-engines.js` | Installs CUDA and OpenVINO in-app and tries every device. **Downloads about 700 MB** | `[dev] I-DONE` | 15 min and up |
 
 Any failure prints `[dev] FAILED: <reason>` and quits the app.
+The Windows batch runner can still exit with code 0 after that marker, so check for `17 DONE`,
+`R-DONE`, or `E-DONE` in the output rather than relying on its exit code alone.
 
 Windows:
 
@@ -257,8 +303,7 @@ NPU inference as working unless *Try NPU now* showed a verified answer on real h
 
 ## 9. Repository notes
 
-- This project is the `V2/` folder of the repository. `main` holds V2 as merged before this
-  branch; everything described here is in this branch only.
+- This project is the `V2/` folder on the repository's `main` branch.
 - The pinned llama.cpp release is in `src-tauri/engines.json` (`tag`) and
   `runtime::LLAMA_REVISION`; both must agree (a unit test checks). To move to another
   release, change `TAG` in `scripts/make-engines-manifest.py`, run it
