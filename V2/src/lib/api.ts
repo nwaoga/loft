@@ -28,6 +28,7 @@ import type {
   ModelInfo,
   RuntimeStatus,
   Source,
+  Usage,
 } from "./types";
 
 import type { AnswerOptions } from "./chat-options.svelte";
@@ -275,6 +276,50 @@ export async function retryEngines(): Promise<InferenceOverview> {
 }
 
 /** The last lines a model server logged. */
+/** What each part of Loft is using right now. */
+export async function getUsage(): Promise<Usage> {
+  if (isTauri()) return invoke<Usage>("get_usage");
+  // Preview: a chat model on a graphics card, the embedder on the processor.
+  const GB = 1024 ** 3;
+  const wobble = () => Math.round(Math.random() * 40) / 10;
+  return {
+    parts: [
+      {
+        kind: "chat",
+        label: "Chat model",
+        model: "Qwen 2.5 3B Instruct",
+        runsOn: "NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)",
+        memoryBytes: 0.42 * GB,
+        cpuPercent: wobble(),
+        device: { name: "NVIDIA GeForce RTX 4050 Laptop GPU", bytes: 3.2 * GB, shared: false },
+        weightsBytes: 1.95 * GB,
+        contextBytes: 1.45 * GB,
+        contextTokens: 32768,
+        processes: 1,
+      },
+      {
+        kind: "embed",
+        label: "Embedding model",
+        model: "Nomic Embed Text v1.5",
+        runsOn: "CPU only",
+        memoryBytes: 0.55 * GB,
+        cpuPercent: 0,
+        weightsBytes: 0.26 * GB,
+        contextBytes: 0.24 * GB,
+        contextTokens: 8192,
+        processes: 1,
+      },
+      { kind: "app", label: "Loft and its window", memoryBytes: 0.31 * GB, cpuPercent: wobble(), processes: 6 },
+    ],
+    memoryBytes: 1.28 * GB,
+    deviceBytes: 3.2 * GB,
+    cpuPercent: 3.1,
+    systemTotalBytes: 31.7 * GB,
+    systemAvailableBytes: 14.2 * GB,
+    cores: 20,
+  };
+}
+
 export async function getEngineLog(engine: EngineName): Promise<string[]> {
   if (isTauri()) return invoke<string[]>("get_engine_log", { engine });
   return [`(preview) ${engine} server log`, "load_tensors:      Vulkan1 model buffer size =  2005.12 MiB"];

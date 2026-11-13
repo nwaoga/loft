@@ -25,6 +25,7 @@ mod power;
 mod rag;
 mod runtime;
 mod store;
+mod usage;
 mod vision;
 
 use std::collections::HashSet;
@@ -211,6 +212,8 @@ struct AppState {
     install_cancel: Arc<AtomicBool>,
     /// "Test performance": the stored measurements and the test in progress.
     bench: bench::BenchState,
+    /// Processor readings between calls of `get_usage`.
+    usage: Mutex<usage::Meter>,
     /// The tray (menu bar) icon exists. Without one Loft cannot live there.
     tray_ok: AtomicBool,
     /// Saved conversations (`chats.db`): separate from the index, and from
@@ -401,6 +404,30 @@ async fn set_engine_override(app: AppHandle, target: Option<Target>) -> engine::
 async fn retry_engines(app: AppHandle) -> engine::InferenceOverview {
     engine::retry(&app).await;
     engine::overview(&app)
+}
+
+/// What each part of Loft is using right now: memory, graphics memory and
+/// processor, for the panel in Settings (which asks every couple of seconds).
+#[tauri::command]
+async fn get_usage(app: AppHandle) -> usage::Usage {
+    let (chat, embed) = {
+        let state = app.state::<AppState>();
+        let rt = state.runtime.lock().unwrap();
+        let name = |kind: ServerKind| rt.model_id_of(kind).map(|id| state.entry(&id).map(|e| e.name.clone()).unwrap_or(id));
+        (
+            rt.usage_of(ServerKind::Chat, name(ServerKind::Chat)),
+            rt.usage_of(ServerKind::Embed, name(ServerKind::Embed)),
+        )
+    };
+    // Listing processes is quick but is not UI work.
+    let measuring = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = measuring.state::<AppState>();
+        let mut meter = state.usage.lock().unwrap();
+        usage::measure(&mut meter, chat, embed)
+    })
+    .await
+    .unwrap_or_else(|_| usage::measure(&mut usage::Meter::default(), None, None))
 }
 
 /// The last lines a model server logged, for the diagnostics panel.
@@ -1722,6 +1749,7 @@ pub fn run() {
                 installing: Mutex::new(None),
                 install_cancel: Arc::new(AtomicBool::new(false)),
                 bench: bench::BenchState::new(bench_path),
+                usage: Mutex::new(usage::Meter::default()),
                 models_dir,
                 config_path,
                 catalog,
@@ -1824,6 +1852,7 @@ pub fn run() {
             set_engine_override,
             retry_engines,
             get_engine_log,
+            get_usage,
             install_engine,
             cancel_engine_install,
             remove_engine,

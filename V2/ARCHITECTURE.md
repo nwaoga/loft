@@ -83,6 +83,7 @@ mock data, which is how the UI is developed and previewed without building the b
 | `hardware.rs`, `power.rs` | What the operating system reports: graphics cards, NPUs and their drivers; mains or battery, change notifications, battery drain. |
 | `installer.rs` | Optional engines: the pinned list, download with size and SHA-256 checks, unpacking by file name only, swap-in. |
 | `bench.rs` | Test performance, "Try … now", stored measurements and the advice drawn from them. |
+| `usage.rs` | "What Loft is using": each part's processes, resident memory and processor share, plus model, context and graphics memory from the server's load log. |
 | `models.rs` | Downloads a model file with resume, checks the GGUF header and the SHA-256. |
 | `parse.rs` | Turns a file into text sections: text and code, PDF, docx, pptx, spreadsheets, pictures. |
 | `ocr.rs` | Text recognition for pictures and scanned PDF pages (Windows' built-in engine). |
@@ -383,6 +384,23 @@ plan + what is running + what failed + busy? ──► decision (inference::deci
   against the pinned size and SHA-256, unpacked by file name only into
   `<app data>/engines/`, and swapped in only when complete.
 - **How many layers**: left to llama.cpp, which fits what it can in free VRAM.
+- **No mapped copy on a graphics card.** For CUDA and Vulkan on a card with memory of its
+  own, servers start with `--load-mode none`. With llama.cpp's default (the model file
+  memory-mapped), the pages read while copying the weights to the card stay resident: for
+  Qwen 2.5 3B on the RTX 4050 the chat server held 2.3 GB of RAM on CUDA and 2.0 GB on Vulkan;
+  with `none`, 0.6 GB and 0.35 GB, with the same load time and answer. On Intel Iris Xe
+  (memory shared with the system) it made no difference, so built-in graphics, Metal,
+  OpenVINO and the CPU keep the default. The weights then sit in a `CUDA_Host` /
+  `Vulkan_Host` buffer instead of `CPU_Mapped`; `verify` counts both as system memory.
+- **What Loft is using** (`usage.rs`) lists Loft's process tree (Toolhelp on Windows,
+  `/proc` on Linux, `ps` on macOS) and puts each process with its part: the two model
+  servers by process id, any other `llama-server` as the picture model, the rest (the web
+  view's processes) as Loft. Memory is resident memory (working set / RSS). Not committed or
+  "private" memory: on Windows that also counts what a process has allocated on a graphics
+  card, so the model would be counted twice. Graphics memory, model size and context size
+  come from the load log. Memory on built-in graphics or an NPU is system memory and is
+  already in the resident figure (measured on Iris Xe), so it is shown but not added again.
+  Processor share is the change in processor time between two readings, over all cores.
 - **Clean-up**: servers are stopped on exit. On Windows they are also placed in a job object,
   so they die with Loft even if it is killed.
 

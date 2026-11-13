@@ -77,6 +77,8 @@ pub struct Server {
     pub model_id: String,
     /// The backend and device it was started on.
     pub resolved: Resolved,
+    /// The context size it was started with, in tokens.
+    pub ctx: u32,
     log: Arc<Mutex<ServerLog>>,
 }
 
@@ -213,6 +215,17 @@ impl Runtime {
         self.server(kind).map(Server::pid)
     }
 
+    /// What the running `kind` server is, for the usage panel.
+    pub fn usage_of(&self, kind: ServerKind, model: Option<String>) -> Option<crate::usage::ModelServer> {
+        self.server(kind).map(|s| crate::usage::ModelServer {
+            pid: s.pid(),
+            model,
+            resolved: s.resolved.clone(),
+            report: s.report(),
+            ctx: s.ctx,
+        })
+    }
+
     /// True when the server process for `kind` has exited (crashed or was
     /// killed) while we still hold it.
     pub fn exited(&mut self, kind: ServerKind) -> bool {
@@ -323,6 +336,7 @@ impl Runtime {
             port,
             model_id: model_id.to_string(),
             resolved: resolved.clone(),
+            ctx,
             log,
         })
     }

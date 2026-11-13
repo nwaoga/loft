@@ -22,6 +22,15 @@ Smaller changes that came out of testing, worth knowing about:
 - Model servers are started in a scratch folder (`<temp>/loft-engine-work`), because engines
   write stray files into their working directory.
 - Choices are named device first: `NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)`.
+- Added 13 November 2026: **What Loft is using**, a live panel at the top of Settings →
+  Performance & battery (memory, graphics-card memory and processor per part of Loft). It
+  found that a model on a graphics card was also held in RAM, as a memory-mapped copy of its
+  file. Servers on a card with memory of its own (CUDA, Vulkan) now start with
+  `--load-mode none`: the chat server on the RTX 4050 went from 2.3 GB to 0.64 GB of RAM.
+  Worth checking on your machines: the panel's figures against Task Manager (Details tab,
+  "Working set"), that CUDA and Vulkan on the RTX 5070 Ti still load and answer, and what
+  OpenVINO on the NPU holds in RAM (the load mode was not changed there). On Linux and macOS
+  the panel's process code has not been run.
 - Added 13 November 2026: small talk ("hi", "thanks", "who are you?") gets a short friendly
   reply instead of the refusal, and the refusal now ends with the user's folder names: "I
   couldn't find that in your indexed files. I'm only really here to talk about items in
@@ -36,7 +45,7 @@ The development machine: Windows 11, Intel Core i7-12700H, Intel Iris Xe graphic
 
 | Check | Result on that machine |
 |---|---|
-| `cargo test --lib` | 87 passed, 10 ignored (the ignored ones need downloaded models) |
+| `cargo test --lib` | 92 passed, 11 ignored (the ignored ones need downloaded models) |
 | `rag::tests::end_to_end`; `indexer::tests::end_to_end` (real models) | passed |
 | `runtime::tests::each_target_runs_where_it_is_told` | passed: CPU only, Vulkan on the Intel graphics, Vulkan on the NVIDIA card, each confirmed from the server's log |
 | `scripts\win-smoke.bat` (UI test, about 60 steps) | passed, including floating style, tray mode and chat history; also passed with EmbeddingGemma as the embedding model |

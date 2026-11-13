@@ -715,6 +715,22 @@
     await sleep(500);
     await log(`12 settings | ${text($(".tab-content.shown")).slice(0, 330)}`);
 
+    // What Loft is using: both model servers and Loft itself, with real figures.
+    await waitFor(() => $(".usage .part") && $(".usage .totals"), 8000, "the usage panel");
+    await sleep(2500); // the second reading has processor figures
+    const parts = $$(".usage .part").map((p) => text(p.querySelector(".part-name")));
+    for (const want of ["Chat model", "Embedding model", "Loft and its window"]) {
+      if (!parts.includes(want)) throw new Error(`usage panel lacks ${want}: ${parts.join(", ")}`);
+    }
+    const totals = text($(".usage .totals"));
+    if (!/\d+(\.\d)? (MB|GB) memory/.test(totals) || !/processor \d/.test(totals)) throw new Error(`usage totals: ${totals}`);
+    $$(".usage .part")[0].click();
+    await sleep(200);
+    const chatDetail = text($(".usage .part .detail"));
+    if (!/Model \d.* context .*room for [\d,]+ tokens/.test(chatDetail)) throw new Error(`chat model detail: ${chatDetail}`);
+    $$(".usage .part")[0].click();
+    await log(`12u usage | ${totals} | ${$$(".usage .part").map((p) => text(p.querySelector(".part-line"))).join(" | ")} | chat: ${chatDetail}`);
+
     // Themes: each one recolours the notch; the original is put back afterwards.
     const original = document.documentElement.dataset.theme;
     const colours = [];

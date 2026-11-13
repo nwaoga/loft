@@ -797,6 +797,19 @@ pub fn launch_spec(resolved: &Resolved) -> LaunchSpec {
         (_, Some(device)) => spec.args.extend(["--device".to_string(), device.runtime_id.clone()]),
         (_, None) => {}
     }
+    // On a graphics card the weights live in the card's memory, but with the
+    // model file memory-mapped (llama.cpp's default) the pages read while
+    // loading stay in system memory too: about the size of the model, for
+    // nothing. Measured on an RTX 4050 with Qwen 2.5 3B, resident memory went
+    // from 2.3 GB to 0.6 GB (CUDA) and 2.0 GB to 0.35 GB (Vulkan), with the
+    // same load time and answer. Only for a card with memory of its own: on
+    // Intel Iris Xe graphics, whose memory is system memory, it saved
+    // nothing. Not for Metal (one memory shared with the processor), OpenVINO
+    // (not measured), or the processor (the weights have to be in RAM).
+    let on_card = resolved.device.as_ref().is_some_and(|d| d.kind == DeviceKind::Gpu && d.discrete);
+    if matches!(resolved.backend, Backend::Cuda | Backend::Vulkan) && on_card {
+        spec.args.extend(["--load-mode".to_string(), "none".to_string()]);
+    }
     spec
 }
 
@@ -961,11 +974,12 @@ impl LoadReport {
         }
     }
 
-    /// Megabytes of the model held by something other than the CPU.
+    /// Megabytes of the model held by something other than the CPU. (A
+    /// `CUDA_Host` or `Vulkan_Host` buffer is system memory.)
     fn offloaded(&self) -> Vec<(&str, f64)> {
         self.buffers
             .iter()
-            .filter(|(id, mib)| !id.to_ascii_uppercase().starts_with("CPU") && *mib > 0.0)
+            .filter(|(id, mib)| !is_host_buffer(id) && *mib > 0.0)
             .map(|(id, mib)| (id.as_str(), *mib))
             .collect()
     }
@@ -997,6 +1011,12 @@ impl LoadReport {
     }
 }
 
+/// A buffer in system memory: `CPU`, `CPU_Mapped`, `CUDA_Host`, `Vulkan_Host`.
+fn is_host_buffer(id: &str) -> bool {
+    let id = id.to_ascii_uppercase();
+    id.starts_with("CPU") || id.ends_with("_HOST")
+}
+
 /// Whether the model really is where it was asked to be.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verification {
@@ -1010,7 +1030,7 @@ pub struct Verification {
 /// memory, so this looks at where the weights were actually put.
 pub fn verify(resolved: &Resolved, report: &LoadReport) -> Verification {
     let offloaded = report.offloaded();
-    let on_cpu: f64 = report.buffers.iter().filter(|(id, _)| id.to_ascii_uppercase().starts_with("CPU")).map(|(_, m)| m).sum();
+    let on_cpu: f64 = report.buffers.iter().filter(|(id, _)| is_host_buffer(id)).map(|(_, m)| m).sum();
     match (resolved.backend, &resolved.device) {
         (Backend::Cpu, _) => {
             if offloaded.is_empty() {
@@ -1569,9 +1589,11 @@ mod tests {
         let inv = everything();
         let spec = |target: &Target| launch_spec(&resolve(&inv, target).unwrap());
 
-        assert_eq!(spec(&vulkan(NVIDIA)).args, ["--device", "Vulkan1"]);
+        // On a graphics card, without keeping the model file mapped in RAM as well.
+        assert_eq!(spec(&vulkan(NVIDIA)).args, ["--device", "Vulkan1", "--load-mode", "none"]);
+        // (Not on built-in graphics, whose memory is system memory: no saving there.)
         assert_eq!(spec(&vulkan(IRIS)).args, ["--device", "Vulkan0"]);
-        assert_eq!(spec(&Target::new(Backend::Cuda, Some(NVIDIA))).args, ["--device", "CUDA0"]);
+        assert_eq!(spec(&Target::new(Backend::Cuda, Some(NVIDIA))).args, ["--device", "CUDA0", "--load-mode", "none"]);
         // CPU only must not offload, even from a GPU build.
         assert_eq!(spec(&Target::cpu()).args, ["--device", "none"]);
         assert!(spec(&Target::cpu()).env.is_empty());

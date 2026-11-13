@@ -279,6 +279,43 @@ export interface EngineInstallProgress {
   error?: string | null;
 }
 
+/** Memory a model has on a device other than the processor. */
+export interface DeviceUse {
+  name: string;
+  bytes: number;
+  /** No memory of its own (built-in graphics, an NPU, Apple silicon): this is system memory, already in memoryBytes. */
+  shared: boolean;
+}
+
+/** One part of Loft in the "What Loft is using" panel. */
+export interface UsagePart {
+  kind: "chat" | "embed" | "otherModel" | "app";
+  label: string;
+  model?: string | null;
+  runsOn?: string | null;
+  /** System memory the part's processes have in RAM right now. */
+  memoryBytes?: number | null;
+  cpuPercent?: number | null;
+  device?: DeviceUse | null;
+  weightsBytes?: number | null;
+  /** Room for the conversation and excerpts, plus working memory. */
+  contextBytes?: number | null;
+  contextTokens?: number | null;
+  processes: number;
+}
+
+export interface Usage {
+  parts: UsagePart[];
+  /** System memory used by all of Loft. */
+  memoryBytes: number;
+  /** Memory on graphics cards with memory of their own. */
+  deviceBytes: number;
+  cpuPercent?: number | null;
+  systemTotalBytes?: number | null;
+  systemAvailableBytes?: number | null;
+  cores: number;
+}
+
 /** What happened when an engine was tried ("Try another engine now", "Try NPU now"). */
 export interface EngineTrial {
   requested: string;
