@@ -296,13 +296,8 @@ async fn run_job(app: &AppHandle, folder_id: i64, force: bool, cancel: Arc<Atomi
         Ok(summary) if summary.cancelled => set_status(app, folder_id, "pending"),
         Ok(summary) => {
             set_status(app, folder_id, "ready");
-            if summary.failed > 0 {
-                let files = if summary.failed == 1 { "file" } else { "files" };
-                set_error(
-                    app,
-                    folder_id,
-                    Some(format!("{} {files} could not be read.", summary.failed)),
-                );
+            if let Some(note) = run_note(summary.failed, summary.partial) {
+                set_error(app, folder_id, Some(note));
             }
         }
         Err(err) => {
@@ -311,6 +306,40 @@ async fn run_job(app: &AppHandle, folder_id: i64, force: bool, cancel: Arc<Atomi
         }
     }
     emit_changed(app);
+}
+
+/// What the folder shows after a run, when something was left out.
+fn run_note(failed: u32, partial: u32) -> Option<String> {
+    let files = |n: u32| if n == 1 { "file" } else { "files" };
+    let mut notes = Vec::new();
+    if failed > 0 {
+        notes.push(format!("{failed} {} could not be read.", files(failed)));
+    }
+    if partial > 0 {
+        let (verb, each) = if partial == 1 { ("was", "") } else { ("were", " each") };
+        notes.push(format!(
+            "{partial} very large {} {verb} only partly indexed (the first {} chunks{each}).",
+            files(partial),
+            indexer::MAX_CHUNKS_PER_FILE,
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::run_note;
+
+    #[test]
+    fn a_run_says_what_was_left_out() {
+        assert_eq!(run_note(0, 0), None);
+        assert_eq!(run_note(1, 0).as_deref(), Some("1 file could not be read."));
+        assert_eq!(run_note(0, 1).as_deref(), Some("1 very large file was only partly indexed (the first 2000 chunks)."));
+        assert_eq!(
+            run_note(3, 2).as_deref(),
+            Some("3 files could not be read. 2 very large files were only partly indexed (the first 2000 chunks each).")
+        );
+    }
 }
 
 // ------------------------------ watching ---------------------------------

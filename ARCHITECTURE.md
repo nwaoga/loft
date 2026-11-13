@@ -160,6 +160,12 @@ walk ─► parse ─► chunk ─► embed ─► store
 - **Chunk**: up to 1,600 characters with 200 of overlap, split at paragraph boundaries; each
   chunk keeps its page, slide or sheet number.
 - **Embed**: 16 chunks per request; the file name is prepended to give the vector context.
+  At most 2,000 chunks per file (`MAX_CHUNKS_PER_FILE`, about 3 MB of text): a data export
+  can be far larger (a 6 MB spreadsheet of orders made 40,000 chunks and kept a run on one
+  file for many minutes), so only its first part is indexed, the log says so, and the folder
+  shows "N very large files were only partly indexed". Progress is reported batch by batch
+  within a file (`chunksDone` / `chunksTotal`), and a cancel is honoured between batches; a
+  file stopped part-way is not stored.
 - **Store**: a file's chunks and vectors are replaced in one transaction.
 
 One index run happens at a time across all folders. Requests made while a run is in flight
