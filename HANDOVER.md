@@ -22,6 +22,11 @@ Smaller changes that came out of testing, worth knowing about:
 - Model servers are started in a scratch folder (`<temp>/loft-engine-work`), because engines
   write stray files into their working directory.
 - Choices are named device first: `NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)`.
+- Added 13 November 2026: **Larger window**, a switch at the top of the panel that doubles
+  it (920×1040, or as much as the display's usable area allows). Checked here in the
+  browser preview only; the UI test now checks the real window grows and shrinks with it,
+  but has not been run. Worth checking with the notch at the top and on the right edge, in
+  floating style, and on a small or high-scaling display.
 - Added 13 November 2026: **Usage**, a live view opened from the pulse icon next to the gear
   (bars for memory, graphics-card memory and processor, then each part of Loft). It
   found that a model on a graphics card was also held in RAM, as a memory-mapped copy of its
@@ -45,7 +50,7 @@ The development machine: Windows 11, Intel Core i7-12700H, Intel Iris Xe graphic
 
 | Check | Result on that machine |
 |---|---|
-| `cargo test --lib` | 92 passed, 11 ignored (the ignored ones need downloaded models) |
+| `cargo test --lib` | 93 passed, 11 ignored (the ignored ones need downloaded models) |
 | `rag::tests::end_to_end`; `indexer::tests::end_to_end` (real models) | passed |
 | `runtime::tests::each_target_runs_where_it_is_told` | passed: CPU only, Vulkan on the Intel graphics, Vulkan on the NVIDIA card, each confirmed from the server's log |
 | `scripts\win-smoke.bat` (UI test, about 60 steps) | passed, including floating style, tray mode and chat history; also passed with EmbeddingGemma as the embedding model |

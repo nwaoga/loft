@@ -732,6 +732,33 @@
     const chatPart = $$(".usage-view .part").find((p) => text(p.querySelector(".part-name")) === "Chat model");
     if (!/Model \d.*context .*room for [\d,]+ tokens/.test(text(chatPart))) throw new Error(`chat model detail: ${text(chatPart)}`);
     await log(`12u usage | ${meters.join(" | ")} | ${$$(".usage-view .part .part-line").map(text).join(" | ")}`);
+    // Larger window: the switch in the header doubles the panel (as far as the
+    // display allows), the native window grows with it, and switching back
+    // restores both.
+    const largeSwitch = $('[aria-label="Larger window"]');
+    const panelBox = () => {
+      const r = $(".notch").getBoundingClientRect();
+      return [Math.round(r.width), Math.round(r.height)];
+    };
+    const [pw0, ph0] = panelBox();
+    const win0 = [window.innerWidth, window.innerHeight];
+    largeSwitch.click();
+    await sleep(1300);
+    const [pw1, ph1] = panelBox();
+    const win1 = [window.innerWidth, window.innerHeight];
+    if (largeSwitch.getAttribute("aria-pressed") !== "true" || pw1 < pw0 * 1.5 || ph1 <= ph0 || win1[0] <= win0[0] || win1[1] <= win0[1]) {
+      throw new Error(`larger window: panel ${pw0}x${ph0} -> ${pw1}x${ph1}, window ${win0} -> ${win1}`);
+    }
+    if (pw1 > win1[0] || ph1 > win1[1]) throw new Error(`the larger panel ${pw1}x${ph1} does not fit its window ${win1}`);
+    largeSwitch.click();
+    await sleep(1500);
+    const [pw2, ph2] = panelBox();
+    const win2 = [window.innerWidth, window.innerHeight];
+    if (pw2 !== pw0 || ph2 !== ph0 || win2[0] !== win0[0] || win2[1] !== win0[1]) {
+      throw new Error(`back to normal: panel ${pw2}x${ph2} (was ${pw0}x${ph0}), window ${win2} (was ${win0})`);
+    }
+    await log(`12L larger window | panel ${pw0}x${ph0} -> ${pw1}x${ph1} -> ${pw2}x${ph2} | window ${win0.join("x")} -> ${win1.join("x")} -> ${win2.join("x")}`);
+
     // Esc leaves it for the main tab; the steps below go on in Settings.
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !$(".tab-content.shown .usage-view") && $(".tab-content.shown .ask, .tab-content.shown.fill"), 3000, "Esc to leave Usage");

@@ -264,6 +264,10 @@ NVIDIA card: CUDA or Vulkan).
 
 **Settings → Performance & battery** is where you choose. Loft recommends; you decide.
 
+**Larger window** (the arrows icon at the top of the panel, always there) doubles the panel,
+to 920×1040, to see more at once; on a display without room for that it grows as far as
+fits, never smaller than normal. Press it again to go back. Loft remembers the choice.
+
 **Usage** (the pulse icon next to the gear) shows what Loft is using right now, updated every
 2 seconds while it is open: bars for memory (Loft's share of the computer's, with other
 programs alongside), the graphics card's memory and the processor, then each part (chat

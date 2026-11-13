@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ui, expand, collapse, toggle } from "./lib/state.svelte";
+  import { ui, expand, collapse, toggle, toggleLarge } from "./lib/state.svelte";
   import {
     isTauri,
     getRuntimeStatus,
@@ -214,6 +214,16 @@
           <span class="spacer"></span>
           <button
             class="icon-btn"
+            class:on={ui.large}
+            onclick={toggleLarge}
+            aria-label="Larger window"
+            aria-pressed={ui.large}
+            title={ui.large ? "Back to the normal size" : "Twice as large, to see more"}
+          >
+            <Icon name={ui.large ? "minimize" : "maximize"} size={14} />
+          </button>
+          <button
+            class="icon-btn"
             class:on={ui.tab === "usage"}
             onclick={() => toggleView("usage")}
             aria-label="Usage"
@@ -283,9 +293,11 @@
   .notch:not(.expanded):hover {
     transform: scale(1.045);
   }
+  /* The panel's size: 460x520, or larger (the switch in the header) as the
+     backend says; it sizes the window to match (PANEL_SIZE in lib.rs). */
   .notch.expanded {
-    width: 460px;
-    height: 520px;
+    width: var(--panel-w, 460px);
+    height: var(--panel-h, 520px);
     border-radius: 0 0 var(--radius-panel) var(--radius-panel);
     box-shadow: var(--notch-shadow);
   }
@@ -322,8 +334,8 @@
     transform-origin: right center;
   }
   :global(html[data-placement="right"]) .notch.expanded {
-    width: 460px;
-    height: 520px;
+    width: var(--panel-w, 460px);
+    height: var(--panel-h, 520px);
     border-radius: var(--radius-panel) 0 0 var(--radius-panel);
   }
   :global(html[data-placement="right"]) .ear.left {
@@ -475,8 +487,8 @@
     transform: translateX(-50%);
     display: flex;
     flex-direction: column;
-    width: 460px;
-    height: 520px;
+    width: var(--panel-w, 460px);
+    height: var(--panel-h, 520px);
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.12s ease;
