@@ -6,9 +6,9 @@
 // UI exists). The UI mirrors them as `data-style` and `data-tray` on <html>,
 // which the layout in App.svelte keys off.
 
-import { getWindowSettings, rememberPosition, setTrayOnly, setWindowStyle } from "./api";
+import { getWindowSettings, onPanelSize, rememberPosition, setTrayOnly, setWindowStyle } from "./api";
 import { syncPlacement } from "./placement.svelte";
-import { ui } from "./state.svelte";
+import { applyPanelSize, ui } from "./state.svelte";
 
 export type WindowStyle = "notch" | "floating";
 
@@ -38,9 +38,14 @@ export async function initWindowStyle() {
     windowStyle.value = saved.style;
     windowStyle.trayOnly = saved.trayOnly;
     windowStyle.trayAvailable = saved.trayAvailable;
+    ui.large = saved.large;
   } catch {
     /* keep the defaults */
   }
+  // The backend says how large the panel is whenever it places the window.
+  onPanelSize((size) => {
+    if (ui.expanded) applyPanelSize(size);
+  }).catch(() => {});
   apply();
 }
 

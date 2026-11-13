@@ -177,6 +177,9 @@ struct Selection {
     /// tray (menu bar) icon or with the hotkey.
     #[serde(default)]
     tray_only: bool,
+    /// The panel opens twice as large (as far as the display allows).
+    #[serde(default)]
+    large: bool,
 }
 
 /// Deserialize a field, falling back to its default if it is malformed.
@@ -1240,20 +1243,48 @@ fn open_source(state: State<AppState>, path: String, page: Option<u32>) -> Resul
 /// drop shadow (a shadow that reaches the window edge is cut off in a visible
 /// rectangle). Keep in step with the sizes in src/App.svelte and src/app.css.
 const COLLAPSED_SIZE: (f64, f64) = (320.0, 76.0); // pill 236x36 + corners, hover growth, shadow
-const EXPANDED_SIZE: (f64, f64) = (540.0, 580.0); // panel 460x520 + corners and shadow
+/// The panel (logical px) at its normal size; the window adds a margin.
+const PANEL_SIZE: (f64, f64) = (460.0, 520.0);
+const PANEL_MARGIN: (f64, f64) = (80.0, 60.0); // corners and shadow: window 540x580
 // The same, hanging from the right edge: the pill stands upright (36x190) and
 // the margins are above, below and to the left.
 const COLLAPSED_SIZE_RIGHT: (f64, f64) = (76.0, 274.0);
-const EXPANDED_SIZE_RIGHT: (f64, f64) = (520.0, 600.0);
+const PANEL_MARGIN_RIGHT: (f64, f64) = (60.0, 80.0); // window 520x600
+/// Room left between a large panel's window and the edges of the display.
+const LARGE_GAP: f64 = 24.0;
 
-/// Window size (logical px) for a placement and state.
-fn notch_size(placement: Placement, expanded: bool) -> (f64, f64) {
+/// The panel's size (logical px): normal, or twice that when `large`, kept
+/// small enough for its window to fit in `room` (the display's usable area,
+/// logical px), and never smaller than normal.
+fn panel_size(large: bool, room: Option<(f64, f64)>) -> (f64, f64) {
+    if !large {
+        return PANEL_SIZE;
+    }
+    let (mut width, mut height) = (PANEL_SIZE.0 * 2.0, PANEL_SIZE.1 * 2.0);
+    if let Some((room_w, room_h)) = room {
+        // The larger of the two margins, so the size is the same at either edge.
+        let margin = PANEL_MARGIN.0.max(PANEL_MARGIN_RIGHT.0) + LARGE_GAP;
+        width = width.min(room_w - margin);
+        height = height.min(room_h - PANEL_MARGIN.1.max(PANEL_MARGIN_RIGHT.1) - LARGE_GAP);
+    }
+    (width.max(PANEL_SIZE.0).floor(), height.max(PANEL_SIZE.1).floor())
+}
+
+/// Window size (logical px) for a placement and state, around a `panel`.
+fn notch_size(placement: Placement, expanded: bool, panel: (f64, f64)) -> (f64, f64) {
     match (placement, expanded) {
         (Placement::Top, false) => COLLAPSED_SIZE,
-        (Placement::Top, true) => EXPANDED_SIZE,
+        (Placement::Top, true) => (panel.0 + PANEL_MARGIN.0, panel.1 + PANEL_MARGIN.1),
         (Placement::Right, false) => COLLAPSED_SIZE_RIGHT,
-        (Placement::Right, true) => EXPANDED_SIZE_RIGHT,
+        (Placement::Right, true) => (panel.0 + PANEL_MARGIN_RIGHT.0, panel.1 + PANEL_MARGIN_RIGHT.1),
     }
+}
+
+/// The usable part of a display (without the taskbar or dock), logical px.
+fn room_on(monitor: &tauri::Monitor) -> (f64, f64) {
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    (area.size.width as f64 / scale, area.size.height as f64 / scale)
 }
 
 /// Top-left corner (physical px) of a `size` window docked at `placement` on
@@ -1339,13 +1370,16 @@ fn target_monitor(window: &tauri::WebviewWindow, wanted: Option<&str>) -> Option
 }
 
 /// Resize the notch window for its state and dock it on its display:
-/// top-centre, or centred on the right edge.
-fn size_notch(window: &tauri::WebviewWindow, expanded: bool, placement: Placement, monitor: Option<&str>) {
-    let (width, height) = notch_size(placement, expanded);
+/// top-centre, or centred on the right edge. Returns the panel's size.
+fn size_notch(window: &tauri::WebviewWindow, expanded: bool, placement: Placement, monitor: Option<&str>, large: bool) -> (f64, f64) {
     let Some(monitor) = target_monitor(window, monitor) else {
+        let panel = panel_size(large, None);
+        let (width, height) = notch_size(placement, expanded, panel);
         let _ = window.set_size(tauri::LogicalSize::new(width, height));
-        return;
+        return panel;
     };
+    let panel = panel_size(large, Some(room_on(&monitor)));
+    let (width, height) = notch_size(placement, expanded, panel);
     let scale = monitor.scale_factor();
     let size = ((width * scale).round() as i32, (height * scale).round() as i32);
     let origin = notch_origin(
@@ -1355,6 +1389,7 @@ fn size_notch(window: &tauri::WebviewWindow, expanded: bool, placement: Placemen
         size,
     );
     move_and_size(window, origin, size);
+    panel
 }
 
 /// Put the window at `origin` with `size` (physical px).
@@ -1380,8 +1415,13 @@ fn move_and_size(window: &tauri::WebviewWindow, origin: (i32, i32), size: (i32, 
 /// left), on whichever display that point is on, kept wholly on screen. A
 /// point that is on no display any more (a monitor was unplugged) falls back
 /// to the default spot on the chosen display.
-fn place_floating(window: &tauri::WebviewWindow, expanded: bool, anchor: Option<(i32, i32)>, fallback_monitor: Option<&str>) {
-    let (width, height) = notch_size(Placement::Top, expanded);
+fn place_floating(
+    window: &tauri::WebviewWindow,
+    expanded: bool,
+    anchor: Option<(i32, i32)>,
+    fallback_monitor: Option<&str>,
+    large: bool,
+) -> (f64, f64) {
     let holds = |m: &tauri::Monitor, p: (i32, i32)| {
         let (x, y) = (m.position().x, m.position().y);
         p.0 >= x && p.0 < x + m.size().width as i32 && p.1 >= y && p.1 < y + m.size().height as i32
@@ -1390,28 +1430,44 @@ fn place_floating(window: &tauri::WebviewWindow, expanded: bool, anchor: Option<
         .and_then(|a| window.available_monitors().unwrap_or_default().into_iter().find(|m| holds(m, a)))
         .or_else(|| target_monitor(window, fallback_monitor));
     let Some(monitor) = monitor else {
+        let panel = panel_size(large, None);
+        let (width, height) = notch_size(Placement::Top, expanded, panel);
         let _ = window.set_size(tauri::LogicalSize::new(width, height));
-        return;
+        return panel;
     };
+    let panel = panel_size(large, Some(room_on(&monitor)));
+    let (width, height) = notch_size(Placement::Top, expanded, panel);
     let scale = monitor.scale_factor();
     let size = ((width * scale).round() as i32, (height * scale).round() as i32);
     let origin = (monitor.position().x, monitor.position().y);
     let extent = (monitor.size().width as i32, monitor.size().height as i32);
     let anchor = anchor.filter(|a| holds(&monitor, *a)).unwrap_or_else(|| default_anchor(origin, extent));
     move_and_size(window, floating_origin(anchor, origin, extent, size), size);
+    panel
+}
+
+/// The panel's size, for the UI (logical px).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+struct PanelSize {
+    width: f64,
+    height: f64,
 }
 
 /// Put the window where its style says: docked at the saved edge and
-/// display, or floating where it was left.
-fn dock(window: &tauri::WebviewWindow, state: &AppState, expanded: bool) {
-    let (style, placement, monitor, anchor) = {
+/// display, or floating where it was left. The panel's size (which depends
+/// on the display) is returned and sent to the UI as `loft://panel-size`.
+fn dock(window: &tauri::WebviewWindow, state: &AppState, expanded: bool) -> PanelSize {
+    let (style, placement, monitor, anchor, large) = {
         let sel = state.selection.lock().unwrap();
-        (sel.style, sel.placement, sel.monitor.clone(), sel.float_anchor)
+        (sel.style, sel.placement, sel.monitor.clone(), sel.float_anchor, sel.large)
     };
-    match style {
-        Style::Notch => size_notch(window, expanded, placement, monitor.as_deref()),
-        Style::Floating => place_floating(window, expanded, anchor, monitor.as_deref()),
-    }
+    let (width, height) = match style {
+        Style::Notch => size_notch(window, expanded, placement, monitor.as_deref(), large),
+        Style::Floating => place_floating(window, expanded, anchor, monitor.as_deref(), large),
+    };
+    let panel = PanelSize { width, height };
+    let _ = window.emit("loft://panel-size", panel);
+    panel
 }
 
 /// Loft is living in the tray: it has a tray icon and the user asked for it.
@@ -1421,14 +1477,26 @@ fn in_tray(state: &AppState) -> bool {
 
 /// Called by the UI just before it expands and just after it collapses.
 #[tauri::command]
-fn set_expanded(window: tauri::WebviewWindow, state: State<AppState>, expanded: bool) {
-    dock(&window, &state, expanded);
+fn set_expanded(window: tauri::WebviewWindow, state: State<AppState>, expanded: bool) -> PanelSize {
+    let panel = dock(&window, &state, expanded);
     if expanded {
         let _ = window.show();
     } else if in_tray(&state) {
         // Nothing stays on screen: the tray icon (or the hotkey) brings it back.
         let _ = window.hide();
     }
+    panel
+}
+
+/// The larger panel on or off, remembered. Returns the panel's new size.
+#[tauri::command]
+fn set_large(window: tauri::WebviewWindow, state: State<AppState>, large: bool, expanded: bool) -> PanelSize {
+    {
+        let mut sel = state.selection.lock().unwrap();
+        sel.large = large;
+        save_selection(&state.config_path, &sel);
+    }
+    dock(&window, &state, expanded)
 }
 
 /// How Loft appears, for Settings.
@@ -1439,6 +1507,8 @@ struct WindowSettings {
     tray_only: bool,
     /// There is a tray (menu bar) icon to live in.
     tray_available: bool,
+    /// The panel opens twice as large.
+    large: bool,
 }
 
 #[tauri::command]
@@ -1448,6 +1518,7 @@ fn get_window_settings(state: State<AppState>) -> WindowSettings {
         style: sel.style,
         tray_only: sel.tray_only && state.tray_ok.load(Ordering::SeqCst),
         tray_available: state.tray_ok.load(Ordering::SeqCst),
+        large: sel.large,
     }
 }
 
@@ -1886,6 +1957,7 @@ pub fn run() {
             set_window_style,
             set_tray_only,
             remember_position,
+            set_large,
             dev_summon,
             get_placement,
             set_placement,
@@ -1985,10 +2057,35 @@ mod tests {
 
         // Either way the panel's window is the larger one.
         for placement in [Placement::Top, Placement::Right] {
-            let (cw, ch) = notch_size(placement, false);
-            let (ew, eh) = notch_size(placement, true);
+            let (cw, ch) = notch_size(placement, false, PANEL_SIZE);
+            let (ew, eh) = notch_size(placement, true, PANEL_SIZE);
             assert!(ew > cw && eh > ch, "{placement:?}: the panel is larger than the pill");
         }
+        // The normal panel's windows are the sizes the UI is laid out for.
+        assert_eq!(notch_size(Placement::Top, true, PANEL_SIZE), (540.0, 580.0));
+        assert_eq!(notch_size(Placement::Right, true, PANEL_SIZE), (520.0, 600.0));
+    }
+
+    #[test]
+    fn the_large_panel_is_twice_the_size_where_it_fits() {
+        assert_eq!(panel_size(false, Some((2560.0, 1400.0))), PANEL_SIZE);
+        // Room to spare: twice as wide and twice as tall.
+        assert_eq!(panel_size(true, Some((2560.0, 1400.0))), (920.0, 1040.0));
+        assert_eq!(panel_size(true, None), (920.0, 1040.0));
+        // A 1920x1080 display at 125% with a taskbar (1536x816 usable):
+        // as tall as fits, still twice as wide.
+        let (w, h) = panel_size(true, Some((1536.0, 816.0)));
+        assert_eq!(w, 920.0);
+        assert_eq!(h, 816.0 - 80.0 - LARGE_GAP);
+        // Its window fits on that display at either edge.
+        for placement in [Placement::Top, Placement::Right] {
+            let (ww, wh) = notch_size(placement, true, (w, h));
+            assert!(ww <= 1536.0 && wh <= 816.0, "{placement:?}: {ww}x{wh}");
+        }
+        // Room for more in one direction only: larger in that one.
+        assert_eq!(panel_size(true, Some((800.0, 560.0))), (800.0 - 80.0 - LARGE_GAP, 520.0));
+        // A display too small for any more: never smaller than normal.
+        assert_eq!(panel_size(true, Some((500.0, 500.0))), PANEL_SIZE);
     }
 
     #[test]

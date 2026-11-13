@@ -392,6 +392,13 @@ plan + what is running + what failed + busy? ──► decision (inference::deci
   (memory shared with the system) it made no difference, so built-in graphics, Metal,
   OpenVINO and the CPU keep the default. The weights then sit in a `CUDA_Host` /
   `Vulkan_Host` buffer instead of `CPU_Mapped`; `verify` counts both as system memory.
+- **Larger window.** The panel's size is not fixed in the UI: the backend works it out
+  when it places the window (`panel_size`: 460×520, or twice that when "large" is on, cut to
+  the display's usable area less the window's margin and a gap) and returns it from
+  `set_expanded` / `set_large`, and sends it as `loft://panel-size` whenever it re-docks
+  (another display, another edge). The UI sets `--panel-w` / `--panel-h` from it. Growing,
+  the window grows first; shrinking, the panel animates down before the window follows, so
+  nothing is cut off mid-animation. The choice is `large` in `selection.json`.
 - **Usage** (`usage.rs`, shown by `Usage.svelte`, a view opened from the header like Settings) lists Loft's process tree (Toolhelp on Windows,
   `/proc` on Linux, `ps` on macOS) and puts each process with its part: the two model
   servers by process id, any other `llama-server` as the picture model, the rest (the web

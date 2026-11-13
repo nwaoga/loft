@@ -499,9 +499,37 @@ export async function devSetPower(source: PowerSource): Promise<void> {
   mockChanged();
 }
 
+/** The open panel's size (logical px); it depends on the display when large. */
+export interface PanelSize {
+  width: number;
+  height: number;
+}
+
+const NORMAL_PANEL: PanelSize = { width: 460, height: 520 };
+/** Preview: twice the normal size, kept inside the browser window. */
+const previewPanel = (large: boolean): PanelSize =>
+  large
+    ? { width: Math.max(460, Math.min(920, window.innerWidth - 80)), height: Math.max(520, Math.min(1040, window.innerHeight - 80)) }
+    : NORMAL_PANEL;
+
 /** Grow the native window before the panel opens / shrink it after it closes. */
-export async function setExpanded(expanded: boolean): Promise<void> {
-  if (isTauri()) return ownMove(() => invoke<void>("set_expanded", { expanded }));
+export async function setExpanded(expanded: boolean): Promise<PanelSize> {
+  if (isTauri()) return ownMove(() => invoke<PanelSize>("set_expanded", { expanded }));
+  return previewPanel(mockWindow.large);
+}
+
+/** The larger panel on or off (remembered); resizes the window. Returns the panel's size. */
+export async function setLarge(large: boolean, expanded: boolean): Promise<PanelSize> {
+  if (isTauri()) return ownMove(() => invoke<PanelSize>("set_large", { large, expanded }));
+  mockWindow.large = large;
+  return previewPanel(large);
+}
+
+/** The panel's size changed (another display, another edge). */
+export async function onPanelSize(cb: (size: PanelSize) => void): Promise<Unsub> {
+  if (!isTauri()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<PanelSize>("loft://panel-size", (e) => cb(e.payload));
 }
 
 // Loft moves and resizes its own window (opening, closing, changing edge or
@@ -524,9 +552,11 @@ export interface WindowSettings {
   trayOnly: boolean;
   /** This desktop gave Loft a tray (menu bar) icon. */
   trayAvailable: boolean;
+  /** The panel opens twice as large. */
+  large: boolean;
 }
 
-let mockWindow: WindowSettings = { style: "notch", trayOnly: false, trayAvailable: true };
+let mockWindow: WindowSettings = { style: "notch", trayOnly: false, trayAvailable: true, large: false };
 
 /** How Loft appears: notch or floating, and whether it lives in the tray. */
 export async function getWindowSettings(): Promise<WindowSettings> {
