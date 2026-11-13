@@ -28,7 +28,6 @@
   } from "../types";
   import Benchmark from "./Benchmark.svelte";
   import Icon from "./Icon.svelte";
-  import UsagePanel from "./Usage.svelte";
 
   // Which engine (llama.cpp build) and which device run the models, separately
   // for mains power and for battery. Loft recommends; the user decides.
@@ -281,8 +280,6 @@
         </button>
       {/if}
     </div>
-
-    <UsagePanel />
 
     <!-- The saved choices -->
     {@render picker("perf-plugged", "When plugged in", profileKey(overview.settings.pluggedIn), (k) => choose("pluggedIn", k), "Automatic — performance (recommended)")}

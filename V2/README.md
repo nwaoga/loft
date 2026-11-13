@@ -264,9 +264,14 @@ NVIDIA card: CUDA or Vulkan).
 
 **Settings → Performance & battery** is where you choose. Loft recommends; you decide.
 
+**Usage** (the pulse icon next to the gear) shows what Loft is using right now, updated every
+2 seconds while it is open: bars for memory (Loft's share of the computer's, with other
+programs alongside), the graphics card's memory and the processor, then each part (chat
+model, embedding model, the picture model while it reads pictures, Loft and its window) with
+its memory, graphics memory, processor share, model size and context.
+
 | Control | What it does |
 |---|---|
-| What Loft is using | Live, every 2 seconds while Settings is open: memory, graphics-card memory and processor for the chat model, the embedding model, the picture model (while it reads pictures) and Loft's own window, with Loft's share of the computer's memory. Click a part for its model size, its context and the device it runs on. |
 | When plugged in / When running on battery | The engine and device for each power state. *Automatic* lets Loft choose; anything else is your choice and is kept, even while it is unavailable. |
 | Switch when the power source changes | On: the battery choice is used on battery. Off: the plugged-in choice always. |
 | Allow fallback to another engine | On: if the chosen engine cannot run the model, the next best one is used and the status says so. Off: Loft stops and explains, and nothing else runs. |

@@ -120,6 +120,8 @@ pub struct DeviceUse {
     /// "NVIDIA GeForce RTX 4050 Laptop GPU", "Intel AI Boost".
     pub name: String,
     pub bytes: u64,
+    /// All the memory the device has, where the engine reports it.
+    pub total_bytes: Option<u64>,
     /// The device has no memory of its own (graphics built into the
     /// processor, an NPU, Apple silicon): this is system memory, and is
     /// already in the process's resident memory (measured on Intel Iris Xe).
@@ -141,6 +143,7 @@ pub fn device_use(resolved: &Resolved, report: &LoadReport) -> Option<DeviceUse>
     Some(DeviceUse {
         name: crate::inference::display_name(&device.name),
         bytes: mib * MIB,
+        total_bytes: device.memory_mib.map(|m| m * MIB),
         shared: !device.discrete,
     })
 }

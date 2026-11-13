@@ -715,21 +715,28 @@
     await sleep(500);
     await log(`12 settings | ${text($(".tab-content.shown")).slice(0, 330)}`);
 
-    // What Loft is using: both model servers and Loft itself, with real figures.
-    await waitFor(() => $(".usage .part") && $(".usage .totals"), 8000, "the usage panel");
+    // Usage: its own view from the header, with real figures for both model
+    // servers and Loft itself. It is no longer inside Settings.
+    if (text($(".performance")).includes("What Loft is using")) throw new Error("usage is still shown in Settings");
+    $('[aria-label="Usage"]').click();
+    await waitFor(() => $(".tab-content.shown .usage-view .part"), 8000, "the usage view");
     await sleep(2500); // the second reading has processor figures
-    const parts = $$(".usage .part").map((p) => text(p.querySelector(".part-name")));
+    const parts = $$(".usage-view .part").map((p) => text(p.querySelector(".part-name")));
     for (const want of ["Chat model", "Embedding model", "Loft and its window"]) {
-      if (!parts.includes(want)) throw new Error(`usage panel lacks ${want}: ${parts.join(", ")}`);
+      if (!parts.includes(want)) throw new Error(`usage view lacks ${want}: ${parts.join(", ")}`);
     }
-    const totals = text($(".usage .totals"));
-    if (!/\d+(\.\d)? (MB|GB) memory/.test(totals) || !/processor \d/.test(totals)) throw new Error(`usage totals: ${totals}`);
-    $$(".usage .part")[0].click();
-    await sleep(200);
-    const chatDetail = text($(".usage .part .detail"));
-    if (!/Model \d.* context .*room for [\d,]+ tokens/.test(chatDetail)) throw new Error(`chat model detail: ${chatDetail}`);
-    $$(".usage .part")[0].click();
-    await log(`12u usage | ${totals} | ${$$(".usage .part").map((p) => text(p.querySelector(".part-line"))).join(" | ")} | chat: ${chatDetail}`);
+    const meters = $$(".usage-view .meter").map((m) => `${text(m.querySelector(".meter-title"))}: ${text(m.querySelector(".meter-figure"))} (${text(m.querySelector(".meter-caption"))})`);
+    if (!meters.some((m) => /^Memory: (\d+%|<1%) used/.test(m)) || !meters.some((m) => /^Processor: (\d+%|<1%) used/.test(m))) {
+      throw new Error(`usage meters: ${meters.join(" | ")}`);
+    }
+    const chatPart = $$(".usage-view .part").find((p) => text(p.querySelector(".part-name")) === "Chat model");
+    if (!/Model \d.*context .*room for [\d,]+ tokens/.test(text(chatPart))) throw new Error(`chat model detail: ${text(chatPart)}`);
+    await log(`12u usage | ${meters.join(" | ")} | ${$$(".usage-view .part .part-line").map(text).join(" | ")}`);
+    // Esc leaves it for the main tab; the steps below go on in Settings.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await waitFor(() => !$(".tab-content.shown .usage-view") && $(".tab-content.shown .ask, .tab-content.shown.fill"), 3000, "Esc to leave Usage");
+    $('[aria-label="Settings"]').click();
+    await waitFor(() => $(".tab-content.shown .settings"), 3000, "Settings to open again");
 
     // Themes: each one recolours the notch; the original is put back afterwards.
     const original = document.documentElement.dataset.theme;

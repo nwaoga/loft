@@ -291,7 +291,7 @@ export async function getUsage(): Promise<Usage> {
         runsOn: "NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)",
         memoryBytes: 0.42 * GB,
         cpuPercent: wobble(),
-        device: { name: "NVIDIA GeForce RTX 4050 Laptop GPU", bytes: 3.2 * GB, shared: false },
+        device: { name: "NVIDIA GeForce RTX 4050 Laptop GPU", bytes: 3.2 * GB, totalBytes: 6 * GB, shared: false },
         weightsBytes: 1.95 * GB,
         contextBytes: 1.45 * GB,
         contextTokens: 32768,

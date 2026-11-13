@@ -22,8 +22,8 @@ Smaller changes that came out of testing, worth knowing about:
 - Model servers are started in a scratch folder (`<temp>/loft-engine-work`), because engines
   write stray files into their working directory.
 - Choices are named device first: `NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)`.
-- Added 13 November 2026: **What Loft is using**, a live panel at the top of Settings →
-  Performance & battery (memory, graphics-card memory and processor per part of Loft). It
+- Added 13 November 2026: **Usage**, a live view opened from the pulse icon next to the gear
+  (bars for memory, graphics-card memory and processor, then each part of Loft). It
   found that a model on a graphics card was also held in RAM, as a memory-mapped copy of its
   file. Servers on a card with memory of its own (CUDA, Vulkan) now start with
   `--load-mode none`: the chat server on the RTX 4050 went from 2.3 GB to 0.64 GB of RAM.

@@ -392,7 +392,7 @@ plan + what is running + what failed + busy? ──► decision (inference::deci
   (memory shared with the system) it made no difference, so built-in graphics, Metal,
   OpenVINO and the CPU keep the default. The weights then sit in a `CUDA_Host` /
   `Vulkan_Host` buffer instead of `CPU_Mapped`; `verify` counts both as system memory.
-- **What Loft is using** (`usage.rs`) lists Loft's process tree (Toolhelp on Windows,
+- **Usage** (`usage.rs`, shown by `Usage.svelte`, a view opened from the header like Settings) lists Loft's process tree (Toolhelp on Windows,
   `/proc` on Linux, `ps` on macOS) and puts each process with its part: the two model
   servers by process id, any other `llama-server` as the picture model, the rest (the web
   view's processes) as Loft. Memory is resident memory (working set / RSS). Not committed or

@@ -3,21 +3,20 @@
   import { ui } from "../state.svelte";
   import type { Usage, UsagePart } from "../types";
 
-  // "What Loft is using": memory, graphics memory and processor for each part
-  // of Loft, read every couple of seconds while Settings is open.
+  // Usage: what Loft is using right now, as meters (memory, graphics card,
+  // processor) and then part by part. Read every couple of seconds while
+  // this view is open.
   const EVERY_MS = 2000;
 
   let usage = $state<Usage | null>(null);
   let failed = $state("");
-  let open = $state<Record<string, boolean>>({});
 
   $effect(() => {
-    if (ui.tab !== "settings") return;
+    if (ui.tab !== "usage" || !ui.expanded) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function read() {
       if (stopped) return;
-      // A hidden window does not need the numbers.
       if (document.visibilityState === "visible") {
         try {
           usage = await getUsage();
@@ -41,181 +40,216 @@
     if (gb >= 1) return `${gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)} GB`;
     return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
   };
-  const cpu = (percent?: number | null) => (percent == null ? "…" : `${percent < 10 ? percent.toFixed(1) : percent.toFixed(0)}%`);
+  const percent = (value?: number | null) =>
+    value == null ? "…" : value > 0 && value < 1 ? "<1%" : `${Math.round(value)}%`;
+  const share = (part?: number | null, whole?: number | null) =>
+    part != null && whole ? Math.min(100, (part / whole) * 100) : null;
   const tokens = (n: number) => n.toLocaleString();
 
+  /** The graphics card the models use, when one with memory of its own is. */
+  const card = $derived.by(() => {
+    const devices = (usage?.parts ?? []).map((p) => p.device).filter((d) => d && !d.shared);
+    if (!devices.length) return null;
+    return {
+      name: devices[0]!.name,
+      bytes: devices.reduce((sum, d) => sum + (d!.bytes ?? 0), 0),
+      totalBytes: devices[0]!.totalBytes ?? null,
+    };
+  });
+  const memoryShare = $derived(share(usage?.memoryBytes, usage?.systemTotalBytes));
+  const othersShare = $derived(
+    usage?.systemTotalBytes && usage.systemAvailableBytes != null
+      ? Math.max(0, share(usage.systemTotalBytes - usage.systemAvailableBytes - usage.memoryBytes, usage.systemTotalBytes) ?? 0)
+      : null,
+  );
 
-  const share = $derived(
-    usage?.systemTotalBytes ? Math.min(100, (usage.memoryBytes / usage.systemTotalBytes) * 100) : null,
-  );
-  const inUse = $derived(
-    usage?.systemTotalBytes != null && usage.systemAvailableBytes != null ? usage.systemTotalBytes - usage.systemAvailableBytes : null,
-  );
-  /** The model whose context takes the most memory, when that is most of its memory. */
-  const bigContext = $derived(
-    usage?.parts.find(
-      (p) => p.kind === "chat" && p.contextBytes && p.weightsBytes && p.contextBytes > 0.5 * p.weightsBytes && p.contextBytes > 512 * 1024 ** 2,
-    ),
-  );
+  /** What a part is, in a line: its model and where it runs. */
+  const what = (p: UsagePart) => [p.model, p.runsOn].filter(Boolean).join(" · ");
 </script>
 
-<div class="usage card">
-  <div class="head">
-    <span class="title">What Loft is using</span>
-    {#if usage}
-      <span class="totals">
-        {size(usage.memoryBytes)} memory{#if usage.deviceBytes > 0}&nbsp;· {size(usage.deviceBytes)} graphics card{/if}&nbsp;· processor {cpu(usage.cpuPercent)}
-      </span>
-    {/if}
+{#snippet meter(title: string, caption: string, used: number | null, figure: string, others: number | null = null)}
+  <div class="meter">
+    <div class="meter-text">
+      <div class="meter-title">{title}</div>
+      <div class="meter-caption">{caption}</div>
+    </div>
+    <div class="meter-figure">{figure}</div>
+    <div class="bar" role="meter" aria-label={title} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used ?? 0)}>
+      <span class="fill" style="width: {used ?? 0}%"></span>
+      {#if others != null}<span class="others" style="width: {Math.min(others, 100 - (used ?? 0))}%"></span>{/if}
+    </div>
   </div>
+{/snippet}
 
-  {#if !usage}
-    <div class="faint">{failed || "Measuring…"}</div>
-  {:else}
-    {#if share != null}
-      <div class="meter" title="Loft's share of this computer's memory">
-        <span class="mine" style="width: {share}%"></span>
-        {#if inUse != null && usage.systemTotalBytes}
-          <span class="others" style="width: {Math.max(0, Math.min(100 - share, ((inUse - usage.memoryBytes) / usage.systemTotalBytes) * 100))}%"></span>
+<div class="usage-view">
+  <section>
+    <div class="section-label">What Loft is using</div>
+    {#if !usage}
+      <div class="faint">{failed || "Measuring…"}</div>
+    {:else}
+      <div class="meters card">
+        {@render meter(
+          "Memory",
+          usage.systemTotalBytes
+            ? `${size(usage.memoryBytes)} of ${size(usage.systemTotalBytes)}${usage.systemAvailableBytes != null ? ` · ${size(usage.systemAvailableBytes)} free on this computer` : ""}`
+            : size(usage.memoryBytes),
+          memoryShare,
+          memoryShare == null ? size(usage.memoryBytes) : `${percent(memoryShare)} used`,
+          othersShare,
+        )}
+        {#if card}
+          {@render meter(
+            "Graphics card",
+            `${size(card.bytes)}${card.totalBytes ? ` of ${size(card.totalBytes)}` : ""} · ${card.name}`,
+            share(card.bytes, card.totalBytes),
+            card.totalBytes ? `${percent(share(card.bytes, card.totalBytes))} used` : size(card.bytes),
+          )}
         {/if}
+        {@render meter("Processor", `Share of all ${usage.cores} cores`, usage.cpuPercent ?? 0, `${percent(usage.cpuPercent)} used`)}
       </div>
-      <div class="faint legend">
-        <span><i class="dot mine"></i>Loft {size(usage.memoryBytes)}</span>
-        {#if inUse != null}<span><i class="dot others"></i>everything else {size(Math.max(0, inUse - usage.memoryBytes))}</span>{/if}
-        <span>of {size(usage.systemTotalBytes)}{#if usage.systemAvailableBytes != null}, {size(usage.systemAvailableBytes)} free{/if}</span>
-      </div>
+      {#if othersShare != null}
+        <div class="faint legend"><i class="dot mine"></i>Loft <i class="dot others"></i>other programs</div>
+      {/if}
     {/if}
+  </section>
 
-    {#each usage.parts as p (p.kind)}
-      <button class="part" aria-expanded={!!open[p.kind]} onclick={() => (open[p.kind] = !open[p.kind])}>
-        <span class="part-line">
-          <span class="part-name">{p.label}</span>
-          <span class="part-figures">
-            {size(p.memoryBytes)}{#if p.device && !p.device.shared}&nbsp;+ {size(p.device.bytes)} on the card{/if}&nbsp;· {cpu(p.cpuPercent)}
-          </span>
-        </span>
-        {#if p.model || p.runsOn}
-          <span class="part-sub">{[p.model, p.runsOn].filter(Boolean).join(" · ")}</span>
-        {/if}
-        {#if open[p.kind]}
-          <span class="detail">
+  {#if usage}
+    <section>
+      <div class="section-label">By part</div>
+      <div class="parts card">
+        {#each usage.parts as p (p.kind)}
+          <div class="part">
+            <div class="part-line">
+              <span class="part-name">{p.label}</span>
+              <span class="part-figures">
+                {size(p.memoryBytes)}{#if p.device && !p.device.shared}&nbsp;+ {size(p.device.bytes)} on the card{/if}&nbsp;· {percent(p.cpuPercent)}
+              </span>
+            </div>
+            <div class="bar thin" aria-hidden="true">
+              <span class="fill" style="width: {share(p.memoryBytes, usage.memoryBytes) ?? 0}%"></span>
+            </div>
+            {#if what(p)}<div class="part-sub">{what(p)}</div>{/if}
             {#if p.weightsBytes}
-              <span>
+              <div class="part-sub">
                 {`Model ${size(p.weightsBytes)}`}{p.contextBytes
                   ? `, context ${size(p.contextBytes)}${p.contextTokens ? ` (room for ${tokens(p.contextTokens)} tokens)` : ""}`
-                  : ""}
-              </span>
+                  : ""}{p.device?.shared ? ` · ${size(p.device.bytes)} of its memory is used by ${p.device.name}` : ""}
+              </div>
             {/if}
-            {#if p.device}
-              <span>
-                {#if p.device.shared}
-                  {size(p.device.bytes)} of its memory is used by {p.device.name}, which has no memory of its own
-                {:else}
-                  {size(p.device.bytes)} on {p.device.name}
-                {/if}
-              </span>
-            {/if}
-            <span>{size(p.memoryBytes)} of system memory in use · {p.processes} {p.processes === 1 ? "process" : "processes"}</span>
-          </span>
-        {/if}
-      </button>
-    {/each}
-
-    {#if bigContext}
+          </div>
+        {/each}
+      </div>
       <p class="faint">
-        The chat model's context takes {size(bigContext.contextBytes)}: room for {tokens(bigContext.contextTokens ?? 0)} tokens of conversation
-        and excerpts, set aside in advance whether or not it is used.
+        Memory is what is in RAM right now. Memory on a graphics card with its own memory is counted separately. Processor is the share of
+        all cores, so 100% is every core flat out. Updated every 2 seconds while this is open.
       </p>
-    {/if}
-    <p class="faint">
-      Processor is the share of all {usage.cores} cores, so 100% is every core flat out. Memory on a graphics card does not count against
-      system memory.
-    </p>
+    </section>
   {/if}
 </div>
 
 <style>
-  .usage {
+  .usage-view {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    padding: 10px 12px 11px 14px;
+    gap: 18px;
+    padding-bottom: 4px;
   }
-  .head {
+  section {
     display: flex;
-    align-items: baseline;
+    flex-direction: column;
     gap: 8px;
-    flex-wrap: wrap;
   }
-  .title {
-    font-size: 12px;
+  .section-label {
+    margin: 4px 0 0 2px;
+  }
+  .faint {
+    margin: 0 2px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-faint);
+  }
+  .meters {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 14px 14px 15px;
+  }
+  .meter {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 12px;
+    align-items: end;
+  }
+  .meter-title {
+    font-size: 13px;
     font-weight: 600;
     color: var(--text);
   }
-  .totals {
-    margin-left: auto;
-    font-size: 11.5px;
-    color: var(--text-dim);
+  .meter-caption {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-faint);
     font-variant-numeric: tabular-nums;
   }
-  .faint {
-    margin: 0;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--text-faint);
+  .meter-figure {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
-  .meter {
+  .bar {
+    grid-column: 1 / -1;
     display: flex;
-    height: 6px;
-    border-radius: 3px;
+    height: 8px;
+    margin-top: 6px;
+    border-radius: 4px;
     overflow: hidden;
     background: var(--field-bg-hover);
   }
-  .meter .mine {
-    background: var(--accent);
+  .bar.thin {
+    height: 4px;
+    margin-top: 2px;
+    border-radius: 2px;
   }
-  .meter .others {
+  .bar .fill {
+    background: var(--accent);
+    border-radius: inherit;
+    transition: width 0.6s ease;
+  }
+  .bar .others {
     background: var(--text-faint);
-    opacity: 0.6;
+    opacity: 0.45;
+    transition: width 0.6s ease;
   }
   .legend {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    font-variant-numeric: tabular-nums;
+    align-items: center;
+    gap: 5px;
   }
   .dot {
     display: inline-block;
     width: 7px;
     height: 7px;
-    margin-right: 5px;
     border-radius: 50%;
-    vertical-align: 0;
+  }
+  .dot.others {
+    margin-left: 8px;
+    background: var(--text-faint);
+    opacity: 0.7;
   }
   .dot.mine {
     background: var(--accent);
   }
-  .dot.others {
-    background: var(--text-faint);
+  .parts {
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    padding: 12px 14px 13px;
   }
   .part {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    width: 100%;
-    padding: 6px 8px;
-    margin: 0 -8px;
-    box-sizing: content-box;
-    border: 0;
-    border-radius: 8px;
-    background: none;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .part:hover {
-    background: var(--field-bg-hover);
+    gap: 3px;
   }
   .part-line {
     display: flex;
@@ -225,6 +259,7 @@
   }
   .part-name {
     color: var(--text);
+    font-weight: 500;
   }
   .part-figures {
     margin-left: auto;
@@ -232,17 +267,9 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  .part-sub,
-  .detail {
+  .part-sub {
     font-size: 11px;
     line-height: 1.4;
     color: var(--text-faint);
-  }
-  .detail {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    margin-top: 2px;
-    color: var(--text-dim);
   }
 </style>

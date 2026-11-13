@@ -283,6 +283,8 @@ export interface EngineInstallProgress {
 export interface DeviceUse {
   name: string;
   bytes: number;
+  /** All the memory the device has, where the engine reports it. */
+  totalBytes?: number | null;
   /** No memory of its own (built-in graphics, an NPU, Apple silicon): this is system memory, already in memoryBytes. */
   shared: boolean;
 }
