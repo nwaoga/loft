@@ -315,6 +315,16 @@ impl Options {
         }
     }
 
+    /// The options for a turn that asks for more detail: Detailed, whatever
+    /// the setting, with twice the answer length (at least 1024 tokens).
+    fn for_more_detail(&self) -> Options {
+        Options {
+            length: Length::Detailed,
+            max_tokens: self.max_tokens.saturating_mul(2).clamp(1024, 4096),
+            ..*self
+        }
+    }
+
     fn temperature(&self) -> f32 {
         if self.temperature.is_finite() {
             self.temperature.clamp(0.0, 1.0)
@@ -333,6 +343,46 @@ pub fn is_general(answer: &str) -> bool {
 
 /// Added to the system prompt when the question is a follow-up.
 const FOLLOW_UP_RULE: &str = "\n- This is a conversation. The earlier questions and answers show what the new question refers to; the facts must still come from the excerpts given with the new question.";
+
+// ------------------------------ more detail --------------------------------
+//
+// "Tell me more", "more detail please", "explain in depth": the user wants a
+// longer answer than the length setting gives. That turn is answered as
+// Detailed, whatever the setting, with twice the excerpts, and (after an
+// earlier answer) told not to repeat what was already said.
+
+/// Phrases asking for more than the usual answer (lower case, apostrophes dropped).
+const MORE_DETAIL: &[&str] = &[
+    "more detail", "more details", "more detailed", "in detail", "in more detail", "in depth", "in full",
+    "full detail", "full details", "all the details", "every detail", "tell me more", "say more", "more about",
+    "more info", "more information", "go deeper", "dig deeper", "elaborate", "expand on", "explain further",
+    "explain more", "explain fully", "explain properly", "longer answer", "everything about", "everything you know",
+    "thoroughly", "keep going", "what else",
+];
+
+/// More excerpts for a detail request (nearest chunks searched, prompt budget).
+const MORE_DETAIL_TOP_K: usize = 10;
+const MORE_DETAIL_BUDGET: usize = CONTEXT_BUDGET * 2;
+/// Context (tokens) the chat server needs for the extra excerpts and a long answer.
+const MORE_DETAIL_MIN_CONTEXT: u32 = 8192;
+
+/// Added to the rules when a follow-up asks for more.
+const MORE_DETAIL_RULE: &str = "\n- The user has asked for more detail. Do not just repeat your earlier answer: give the further details, steps, numbers and names the excerpts contain.";
+
+/// True when `question` asks for a fuller answer ("tell me more", "in detail").
+pub fn wants_more_detail(question: &str) -> bool {
+    let words: Vec<String> = question
+        .to_lowercase()
+        .replace(['\'', '’'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    MORE_DETAIL.iter().any(|phrase| {
+        let phrase: Vec<&str> = phrase.split(' ').collect();
+        words.windows(phrase.len()).any(|w| w.iter().zip(&phrase).all(|(a, b)| a == b))
+    })
+}
 
 /// Turns a follow-up into a question that can be searched for on its own.
 const REWRITE_PROMPT: &str = "You rewrite the latest question of a conversation so that it can be understood on its own.\n\
@@ -555,11 +605,22 @@ pub async fn retrieve(
     query_prefix: &str,
     question: &str,
 ) -> Result<Vec<Hit>, String> {
+    retrieve_k(store, embed_port, query_prefix, question, TOP_K).await
+}
+
+/// `retrieve`, for the `k` nearest chunks.
+async fn retrieve_k(
+    store: &Arc<Mutex<Store>>,
+    embed_port: u16,
+    query_prefix: &str,
+    question: &str,
+    k: usize,
+) -> Result<Vec<Hit>, String> {
     let input = format!("{query_prefix}{}", truncate_chars(question, MAX_QUESTION_CHARS));
     let query = crate::embed::embed_one(embed_port, &input).await?;
     let store = store.lock().map_err(|_| "index is unavailable".to_string())?;
     match store.embedding_space()? {
-        Some((_, dim)) if dim == query.len() => store.search(&query, TOP_K),
+        Some((_, dim)) if dim == query.len() => store.search(&query, k),
         // The index was built with another model and is about to be rebuilt.
         Some(_) => Err("The index is being rebuilt for the new embedding model. Try again when indexing finishes.".into()),
         None => Ok(Vec::new()),
@@ -570,6 +631,11 @@ pub async fn retrieve(
 /// when even the best one is a weak match; otherwise the hits close to the
 /// best one, up to the context budget.
 pub fn select_context(hits: Vec<Hit>, min_score: f32) -> Vec<Hit> {
+    select_context_within(hits, min_score, CONTEXT_BUDGET)
+}
+
+/// `select_context` with room for `budget` bytes of excerpts.
+fn select_context_within(hits: Vec<Hit>, min_score: f32, budget: usize) -> Vec<Hit> {
     let top = match hits.first() {
         Some(h) if h.score >= min_score => h.score,
         _ => return Vec::new(),
@@ -580,7 +646,7 @@ pub fn select_context(hits: Vec<Hit>, min_score: f32) -> Vec<Hit> {
         if hit.score < min_score || hit.score < top - SCORE_MARGIN {
             break; // hits are sorted, the rest are weaker still
         }
-        if !out.is_empty() && used + hit.text.len() > CONTEXT_BUDGET {
+        if !out.is_empty() && used + hit.text.len() > budget {
             break;
         }
         used += hit.text.len();
@@ -1056,9 +1122,20 @@ pub async fn answer(
         });
     }
 
-    let hits = retrieve(store, ep.embed_port, &ep.query_prefix, &query).await?;
+    // "Tell me more": a Detailed answer from more excerpts, with more room.
+    // A small context (the NPU's 4096 tokens) keeps the usual excerpts and a
+    // 1024-token answer, so the prompt and the answer still fit.
+    let more = wants_more_detail(question);
+    let roomy = more && context_size(ep.chat_port).await.is_some_and(|n| n >= MORE_DETAIL_MIN_CONTEXT);
+    let options = match (more, roomy) {
+        (false, _) => ep.options,
+        (true, true) => ep.options.for_more_detail(),
+        (true, false) => Options { max_tokens: 1024, ..ep.options.for_more_detail() },
+    };
+    let (top_k, budget) = if roomy { (MORE_DETAIL_TOP_K, MORE_DETAIL_BUDGET) } else { (TOP_K, CONTEXT_BUDGET) };
+    let hits = retrieve_k(store, ep.embed_port, &ep.query_prefix, &query, top_k).await?;
     let top_score = hits.first().map(|h| h.score);
-    let context = select_context(hits, ep.min_score);
+    let context = select_context_within(hits, ep.min_score, budget);
     // Nothing relevant in the files. Say so, and what Loft is here for,
     // without calling the model, unless the user allows general-knowledge answers.
     let decline = decline_message(&ep.folders);
@@ -1085,12 +1162,17 @@ pub async fn answer(
         });
     }
 
-    let messages = build_messages(question, &query, &history, &context, &ep.options, &decline);
+    let mut messages = build_messages(question, &query, &history, &context, &options, &decline);
+    if more && !history.is_empty() {
+        if let Some(rules) = messages[0]["content"].as_str().map(|r| format!("{r}{MORE_DETAIL_RULE}")) {
+            messages[0]["content"] = serde_json::Value::String(rules);
+        }
+    }
     let output = stream_chat(
         ep.chat_port,
         &messages,
-        ep.options.answer_tokens(),
-        ep.options.temperature(),
+        options.answer_tokens(),
+        options.temperature(),
         &cancel,
         &mut on_token,
     )
@@ -1438,6 +1520,51 @@ mod tests {
             clean_rewrite("tell me more about the hub stock count", "tell me more").as_deref(),
             Some("tell me more about the hub stock count")
         );
+    }
+
+    #[test]
+    fn requests_for_more_detail_are_spotted() {
+        for q in [
+            "tell me more",
+            "Tell me more about the hub stock count",
+            "more detail please",
+            "Can you give me more details?",
+            "explain the PIN lockout in depth",
+            "Please elaborate",
+            "What else?",
+            "Go into it in more detail",
+            "I'd like everything about the supplier contract",
+        ] {
+            assert!(wants_more_detail(q), "{q:?} asks for more");
+        }
+        for q in [
+            "tell me about it",
+            "How much longer is the lease?",
+            "Does the contract continue after March?",
+            "Who owns the supplier contract?",
+            "What is the moreton branch address?",
+        ] {
+            assert!(!wants_more_detail(q), "{q:?} is an ordinary question");
+        }
+    }
+
+    #[test]
+    fn more_detail_is_a_detailed_and_longer_answer() {
+        let concise = Options { length: Length::Concise, max_tokens: 300, ..Options::default() };
+        let more = concise.for_more_detail();
+        assert_eq!(more.length, Length::Detailed);
+        assert_eq!(more.answer_tokens(), 1024, "never less than 1024");
+        assert_eq!(Options::default().for_more_detail().answer_tokens(), 2048, "twice the setting");
+        assert_eq!(Options { max_tokens: 4000, ..Options::default() }.for_more_detail().answer_tokens(), 4096);
+        // Tone and the files-only switch are kept.
+        let technical = Options { tone: Tone::Technical, files_only: false, ..Options::default() };
+        assert_eq!(technical.for_more_detail().tone, Tone::Technical);
+        assert!(!technical.for_more_detail().files_only);
+        // More room for excerpts: hits that the usual budget drops are kept.
+        let chunk = "x".repeat(1500);
+        let hits = || (0..8).map(|i| hit(&format!("/{i}.md"), &chunk, None, 0.8 - i as f32 * 0.01)).collect::<Vec<_>>();
+        assert_eq!(select_context(hits(), MIN_SCORE).len(), 4);
+        assert_eq!(select_context_within(hits(), MIN_SCORE, MORE_DETAIL_BUDGET).len(), 8);
     }
 
     #[test]
@@ -1870,8 +1997,35 @@ mod tests {
             }
         }
 
-        // Chat options. Answer length: the same questions asked three ways.
         let words = |s: &str| s.split_whitespace().count();
+
+        // "Tell me more" after an answer: longer, and still from the files.
+        for (first, more) in [
+            ("How do customers join the loyalty scheme?", "tell me more"),
+            ("What does the project plan say about the timeline?", "Can you go into more detail?"),
+        ] {
+            let one = answer(&store, &ep, first, &[], || false, |_| {}, |_| {}).await.unwrap();
+            let history = vec![Turn { question: first.into(), answer: one.answer.clone() }];
+            let started = Instant::now();
+            let two = answer(&store, &ep, more, &history, || false, |_| {}, |_| {}).await.unwrap();
+            eprintln!(
+                "\nmore detail: {first}\n   ({} words) {}\n   {more} -> searched for: {}\n   ({} words, {} sources, {:.1}s) {}",
+                words(&one.answer),
+                one.answer.trim(),
+                two.query,
+                words(&two.answer),
+                two.sources.len(),
+                started.elapsed().as_secs_f32(),
+                two.answer.trim()
+            );
+            if is_decline(&two.answer) || two.sources.is_empty() {
+                failures.push(format!("{more:?} after {first:?}: declined"));
+            } else if words(&two.answer) <= words(&one.answer) {
+                failures.push(format!("{more:?} after {first:?}: not longer than the first answer"));
+            }
+        }
+
+        // Chat options. Answer length: the same questions asked three ways.
         let with = |change: fn(&mut Options)| {
             let mut options = Options::default();
             change(&mut options);

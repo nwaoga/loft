@@ -22,6 +22,12 @@ Smaller changes that came out of testing, worth knowing about:
 - Model servers are started in a scratch folder (`<temp>/loft-engine-work`), because engines
   write stray files into their working directory.
 - Choices are named device first: `NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)`.
+- Added 13 November 2026: **asking for more gets more.** "Tell me more", "more detail",
+  "elaborate" and similar answer that turn as Detailed, with more excerpts and twice the answer
+  tokens, and without repeating the earlier answer. Checked with the real models
+  (`rag::tests::end_to_end`, "more detail" step: 10 to 52 words, 38 to 77 words). Not
+  checked on the NPU, where the excerpts stay as usual and the answer is capped at 1,024
+  tokens to fit its 4,096-token context.
 - Added 13 November 2026: **"tell me about it" follows on.** Asked after a question about a
   feature, it was declined: the rewrite model gave it back unchanged, and searching for "tell
   me about it" found nothing. A fifth rewrite example covers it, and an unchanged rewrite of
@@ -61,7 +67,7 @@ The development machine: Windows 11, Intel Core i7-12700H, Intel Iris Xe graphic
 
 | Check | Result on that machine |
 |---|---|
-| `cargo test --lib` | 96 passed, 12 ignored (the ignored ones need downloaded models) |
+| `cargo test --lib` | 98 passed, 12 ignored (the ignored ones need downloaded models) |
 | `rag::tests::end_to_end`; `indexer::tests::end_to_end` (real models) | passed |
 | `runtime::tests::each_target_runs_where_it_is_told` | passed: CPU only, Vulkan on the Intel graphics, Vulkan on the NVIDIA card, each confirmed from the server's log |
 | `scripts\win-smoke.bat` (UI test, about 60 steps) | passed, including floating style, tray mode and chat history; also passed with EmbeddingGemma as the embedding model |

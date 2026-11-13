@@ -124,6 +124,12 @@ after "When does the pilot start?" works. **New chat** starts over.
   costs one short extra model call per follow-up; a first question skips it.
 - The prompt then holds the last 4 turns at most (about 2,400 bytes; long answers are cut to
   700 characters, oldest turns dropped first), the fresh excerpts, and the question.
+- **Asking for more.** "Tell me more", "more detail please", "explain it in depth", "what
+  else?" and similar get a fuller answer for that turn. It is written as **Detailed**, whatever
+  the Answer length setting, from up to twice as many excerpts, with up to twice the answer
+  tokens (at least 1,024, at most 4,096). After an earlier answer, the model is told not to
+  repeat it. On the NPU (a 4,096-token context) the excerpts stay as usual and the answer gets
+  1,024 tokens, so everything still fits.
 - Limits: the model can answer a follow-up from what was already said rather than from the new
   excerpts, in which case the sources listed under it may not be where the answer came from.
   Turns older than the last 4 are forgotten.

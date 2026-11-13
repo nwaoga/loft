@@ -196,6 +196,15 @@ question ─► [rewrite if follow-up] ─► embed ─► search ─► select 
 5. **Stream**: tokens are forwarded to the UI as events. Token counts come from the server's
    own usage figures; the context size comes from its `/props`.
 
+**Asking for more** (`wants_more_detail`: "tell me more", "in detail", "elaborate", "what
+else"…). That turn uses `Options::for_more_detail`: Detailed length, and twice the answer
+tokens (1,024 to 4,096). It also searches the 10 nearest chunks with a 12,800-byte excerpt
+budget, and, after an earlier answer, the rules gain `MORE_DETAIL_RULE` (do not repeat it).
+When the chat server's context is under 8,192 tokens (the NPU runs 4,096), the search and
+budget stay as usual and the answer is capped at 1,024 tokens. With Qwen 2.5 3B on the
+sample folder, "tell me more" turned a 10-word answer into 52 words, and "go into more
+detail" took one from 38 to 77 words.
+
 A newer question or the Stop button bumps a generation counter; a stream whose number is no
 longer current stops within 200 ms.
 
