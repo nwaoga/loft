@@ -499,6 +499,13 @@ export async function devSetPower(source: PowerSource): Promise<void> {
   mockChanged();
 }
 
+/** Loft's version (package.json, via tauri.conf.json), shown in Settings. */
+export async function getAppVersion(): Promise<string> {
+  if (!isTauri()) return "preview";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
+}
+
 /** The open panel's size (logical px); it depends on the display when large. */
 export interface PanelSize {
   width: number;

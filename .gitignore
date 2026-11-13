@@ -6,8 +6,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
-# generated icons (run `npm run tauri icon ./app-icon.svg` to (re)create)
-src-tauri/icons/
+# installers made by the release scripts (scripts/windows/release.bat)
+releases/
 
 # downloaded model files & local data (never commit these — they are large)
 models/

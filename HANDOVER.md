@@ -186,7 +186,6 @@ Prerequisites are in the README. In short:
 ```bash
 npm install
 npm run fetch-llama                 # the standard engines for this OS, into src-tauri/binaries/
-npm run tauri icon ./app-icon.svg   # src-tauri/icons is not checked in
 npm run tauri dev                   # macOS / Linux
 ```
 
@@ -196,8 +195,13 @@ Then, in the running app: Settings, download and select **Qwen2.5 3B Instruct** 
 Embed Text v1.5**. The tests' expected answers were tuned on that pair; another chat model
 may phrase things differently and fail a check that is about wording, not behaviour.
 
-`src-tauri/binaries/`, `src-tauri/icons/`, `src-tauri/gen/`, `node_modules/` and `dist/` are
-not in the repository.
+`src-tauri/binaries/`, `src-tauri/gen/`, `node_modules/`, `dist/` and `releases/` are not in
+the repository. The icons now are (`src-tauri/icons/`, made from `app-icon.svg`).
+
+To make an installer: `scripts\windows\release.bat` (see "Releases and installers" in the
+README). Worth checking on another Windows machine: that the installer from
+`releases\windows\<version>\` installs, starts, shows its version at the bottom of Settings,
+and that a newer one installs over it keeping models and folders.
 
 ## 5. Running the tests
 
@@ -346,4 +350,5 @@ NPU inference as working unless *Try NPU now* showed a verified answer on real h
   (`python scripts/make-engines-manifest.py src-tauri/engines.json`; it reads the release's
   asset list from GitHub), update `LLAMA_REVISION`, fetch again, and re-check the log lines
   in section 7.
-- Installers are unsigned.
+- Installers are unsigned. The version number is in `package.json` only; change it with
+  `npm run version:set` or the release script, not by hand in several places.
