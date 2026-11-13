@@ -1,22 +1,25 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Loft's icon: a notch over the lines of a file. The source of every icon
+       in src-tauri/icons (`npm run icons`). Gradients use userSpaceOnUse:
+       relative to a shape's own box they vanish on flat shapes, and the
+       icon generator then leaves the shape out. Bold, high-contrast shapes,
+       so it still reads at 16 px in the tray and the taskbar. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2a2150"/>
-      <stop offset="1" stop-color="#0b0a14"/>
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="512" y2="512">
+      <stop offset="0" stop-color="#3b2f86"/>
+      <stop offset="1" stop-color="#14112a"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7c8cff"/>
-      <stop offset="1" stop-color="#a970ff"/>
+    <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="140" y1="220" x2="372" y2="420">
+      <stop offset="0" stop-color="#8f9cff"/>
+      <stop offset="1" stop-color="#c08bff"/>
     </linearGradient>
   </defs>
   <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <!-- notch -->
-  <rect x="146" y="96" width="220" height="64" rx="32" fill="#151517"/>
-  <circle cx="186" cy="128" r="9" fill="url(#accent)"/>
-  <!-- stacked "files" -->
-  <g fill="none" stroke="url(#accent)" stroke-width="20" stroke-linecap="round">
-    <path d="M176 248 h160"/>
-    <path d="M176 312 h160"/>
-    <path d="M176 376 h96"/>
-  </g>
+  <!-- the notch, with its status light -->
+  <rect x="128" y="84" width="256" height="80" rx="40" fill="#050509"/>
+  <circle cx="176" cy="124" r="14" fill="#7dffb0"/>
+  <!-- the file's lines -->
+  <rect x="140" y="226" width="232" height="40" rx="20" fill="url(#accent)"/>
+  <rect x="140" y="302" width="232" height="40" rx="20" fill="url(#accent)"/>
+  <rect x="140" y="378" width="148" height="40" rx="20" fill="url(#accent)"/>
 </svg>

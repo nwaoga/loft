@@ -212,7 +212,6 @@ npm run dev      # http://localhost:1420  (mock data, full UI)
 ```bash
 npm install
 npm run fetch-llama        # once: downloads the llama.cpp server builds for this OS
-npm run tauri icon ./app-icon.svg   # once: generates src-tauri/icons (not checked in)
 npm run tauri dev          # macOS / Linux
 scripts\win-dev.bat        # Windows (selects the complete MSVC toolset first)
 ```
@@ -240,19 +239,62 @@ Settings also holds:
   [Engines, performance and battery](#engines-performance-and-battery).
 - **Launch at login** and **Quit** (Quit is on the tray icon too).
 
-### Installers
+### Releases and installers
+
+Loft has **one version number**, in `package.json`. `src-tauri/tauri.conf.json` reads it from
+there (`"version": "../package.json"`), so the app, the installer and **Settings** (at the
+bottom, under Quit) all show the same one. `scripts/set-version.mjs` changes it, and keeps
+the Rust crate's copy in `src-tauri/Cargo.toml` in step:
 
 ```bash
-npm run tauri build        # macOS / Linux
-scripts\win-build.bat      # Windows -> src-tauri/target/release/bundle/{nsis,msi}/
+npm run version:set              # print the current version
+npm run version:set 0.2.0        # set it (MAJOR.MINOR.PATCH, numbers only: the MSI format allows nothing else)
+npm run version:set patch        # 0.1.0 -> 0.1.1 (also: minor, major)
 ```
 
-The llama.cpp builds in `src-tauri/binaries/` are bundled into the installer; models are not
-(they are downloaded in the app, and verified against the SHA-256 pinned in `catalog.json`).
-Leave the large optional engines out of `binaries/` unless you want them in the installer:
-users can add them from Settings.
-Installers are **unsigned**: Windows SmartScreen and macOS Gatekeeper will warn until you sign
-them with your own certificates.
+**A release** is made by the release script for the platform. Each platform has its own
+folder under `scripts/` (`scripts/windows/` now; `scripts/macos/` is planned) and its
+releases go to its own folder under `releases/` (not checked in).
+
+**Windows:**
+
+```bat
+scripts\windows\release.bat 0.2.0      :: release version 0.2.0
+scripts\windows\release.bat patch      :: next patch version (also: minor, major)
+scripts\windows\release.bat            :: the current version again
+```
+
+It sets the version, runs the type check and the unit tests, builds the optimised app and
+its installer, and puts them in `releases\windows\<version>\`:
+
+| File | What it is |
+|---|---|
+| `Loft_<version>_x64-setup.exe` | The installer. Installs for the current user (no administrator rights) into `%LOCALAPPDATA%\Loft`, adds Loft to the Start menu and to Installed apps (for uninstalling). Running a newer one replaces the older version; settings, models, folders and chats are kept (they live in `%APPDATA%\com.loft.desktop`). |
+| `SHA256SUMS.txt` | The installer's checksum, to check a copy is intact. |
+| `RELEASE.txt` | Version, build date, llama.cpp release, which engines are inside, how to install. |
+
+Options: `-Msi` also makes an `.msi` (for deployment tools such as Intune), `-SkipTests`
+skips the checks, `-Force` remakes a version that was already released (otherwise the script
+refuses, so a version number always means one build). It needs the Windows prerequisites
+above and the llama.cpp builds (`npm run fetch-llama`); it stops and says so if either is
+missing. The version stays changed even if a later step fails: run it again once fixed.
+
+The llama.cpp builds in `src-tauri/binaries/` (CPU and Vulkan) are bundled into the installer;
+models are not (they are downloaded in the app, and verified against the SHA-256 pinned in
+`catalog.json`). CUDA and OpenVINO are added from Settings, so they are not in `binaries/`.
+Installers are **unsigned**: Windows SmartScreen shows "Windows protected your PC" (choose
+*More info*, then *Run anyway*) until they are signed with a code-signing certificate.
+
+On macOS and Linux, `npm run tauri build` still makes the installers (`.dmg`, `.app`,
+`.deb`, `.AppImage`) in `src-tauri/target/release/bundle/`, until those platforms have
+release scripts of their own.
+
+### Icons
+
+Every icon (app, installer, taskbar, tray) comes from `app-icon.svg`, a notch over the lines
+of a file. They are checked in under `src-tauri/icons/`; after changing the design run
+`npm run icons` to make them again (it leaves out Tauri's Android and iOS sets). Keep the
+shapes bold: the same picture is used at 16 pixels in the tray.
 
 ## Engines, performance and battery
 
@@ -566,8 +608,12 @@ scripts/
   smoke-ui.js             # drives the real UI in a debug build (see Testing)
   smoke-engines.js        # the same for engines, power, fallback and the performance test
   smoke-restart.js        # after smoke-ui.js: the chat history survived closing Loft
+  set-version.mjs         # the version number (package.json and Cargo.toml)
+  icons.mjs               # src-tauri/icons from app-icon.svg (`npm run icons`)
+  windows/release.bat     # a Windows release: version, checks, installer -> releases/windows/<version>/
   win-dev.bat, win-build.bat, msvc-env.bat   # Windows build environment
-app-icon.svg              # icon source → `npm run tauri icon`
+app-icon.svg              # the icon's design: every size in src-tauri/icons is made from it
+releases/                 # made by the release scripts, one folder per platform (not checked in)
 ```
 
 ## Milestones

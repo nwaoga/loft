@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAutostart, setAutostart, quitApp, listMonitors, setMonitor } from "../api";
+  import { getAppVersion, getAutostart, setAutostart, quitApp, listMonitors, setMonitor } from "../api";
   import type { MonitorInfo } from "../types";
   import { ui } from "../state.svelte";
   import { THEMES, theme, setTheme } from "../theme.svelte";
@@ -11,6 +11,10 @@
 
   let autostart = $state(false);
   let autostartError = $state("");
+  let version = $state("");
+  getAppVersion()
+    .then((v) => (version = v))
+    .catch(() => {});
 
   // Read the real launch-at-login state each time Settings is opened.
   $effect(() => {
@@ -219,6 +223,7 @@
       <Icon name="power" size={14} />
       Quit Loft
     </button>
+    {#if version}<div class="version">Loft {version}</div>{/if}
   </section>
 </div>
 
@@ -522,6 +527,12 @@
       background 0.14s ease,
       color 0.14s ease,
       border-color 0.14s ease;
+  }
+  .version {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
   }
   .quit:hover {
     color: var(--bad);

@@ -433,6 +433,30 @@ plan + what is running + what failed + busy? ──► decision (inference::deci
 - **A cut-off answer is an error.** If the stream ends without its closing marker (the
   server went away), the answer is reported as failed instead of shown as complete.
 
+## Building and releasing
+
+- **One version number**, in `package.json`. `tauri.conf.json` has `"version":
+  "../package.json"`, so the bundle, the executable's file version and `getVersion()` (shown
+  at the bottom of Settings) all follow it. `scripts/set-version.mjs` is the only thing that
+  changes it; it also rewrites the `[package]` version in `src-tauri/Cargo.toml` (Cargo.lock
+  follows on the next build). Versions are numeric `MAJOR.MINOR.PATCH` because Windows'
+  MSI format accepts nothing else.
+- **Release scripts are per platform**: `scripts/windows/` now, `scripts/macos/` next, each
+  writing to `releases/<platform>/<version>/`. The Windows one (`release.bat`, which selects
+  the MSVC tools, then `release.ps1`) checks prerequisites, sets the version, runs
+  `svelte-check` and `cargo test --lib`, builds with `tauri build --bundles nsis` (and `msi`
+  with `-Msi`), and copies the installer out with a SHA-256 and a `RELEASE.txt`. It refuses
+  to remake a version that exists, unless told to.
+- **The installer** is Tauri's NSIS one: per-user, no administrator rights, into
+  `%LOCALAPPDATA%\Loft`, with a Start-menu entry and an uninstaller. It carries the
+  `binaries/` resources (llama.cpp CPU and Vulkan builds); models and optional engines are
+  downloaded by the app into `%APPDATA%\com.loft.desktop`, which installing or uninstalling
+  does not touch. Unsigned.
+- **Icons** are made from `app-icon.svg` by `npm run icons` and checked in. The tray uses the
+  app's own icon (`default_window_icon`). Shapes in the design are filled, with gradients in
+  `userSpaceOnUse`: a gradient relative to a shape's own box disappears on a flat shape, and
+  the generator silently drops it (the first icon lost its lines that way).
+
 ## Testing
 
 | Layer | How |
