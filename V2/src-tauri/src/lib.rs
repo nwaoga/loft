@@ -104,6 +104,10 @@ struct CatalogEntry {
     /// Text prepended to questions before embedding (model-specific).
     #[serde(default)]
     query_prefix: String,
+    /// Embedding models: the similarity below which nothing counts as
+    /// relevant. Each model has its own scale; absent = `rag::MIN_SCORE`.
+    #[serde(default)]
+    min_score: Option<f32>,
     /// A vision model's second file, the image projector, and where to get it.
     #[serde(default)]
     mmproj_file: String,
@@ -893,6 +897,16 @@ async fn ask(
             return Err("Loft is testing engine performance. Ask again when the test has finished.".into());
         }
         let model = state.selection.lock().unwrap().chat.clone();
+        // The folders Loft answers about: named when a request is declined.
+        let folders: Vec<String> = state
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| store.list_folders().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         // A model that is on its way (Loft has just launched, or is
         // switching engines) is not a model that is missing.
         let settling = state.engines.settling();
@@ -908,12 +922,11 @@ async fn ask(
         };
         let embed_port = ready_port(&rt, ServerKind::Embed).ok_or_else(|| not_ready(ServerKind::Embed, "embedding"))?;
         let chat_port = ready_port(&rt, ServerKind::Chat).ok_or_else(|| not_ready(ServerKind::Chat, "chat"))?;
-        let query_prefix = rt
-            .embed
-            .as_ref()
-            .and_then(|s| state.entry(&s.model_id))
-            .map(|e| e.query_prefix.clone())
-            .unwrap_or_default();
+        // How to phrase a question for the embedding model in use, and
+        // where its "not relevant" line is.
+        let embedder = rt.embed.as_ref().and_then(|s| state.entry(&s.model_id));
+        let query_prefix = embedder.map(|e| e.query_prefix.clone()).unwrap_or_default();
+        let min_score = embedder.and_then(|e| e.min_score).unwrap_or(rag::MIN_SCORE);
         let gen = state.ask_gen.clone();
         let my_gen = gen.fetch_add(1, Ordering::SeqCst) + 1;
         (
@@ -922,6 +935,8 @@ async fn ask(
                 embed_port,
                 chat_port,
                 query_prefix,
+                min_score,
+                folders,
                 options,
             },
             gen,
@@ -1869,6 +1884,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_embedding_model_has_its_own_relevance_floor() {
+        let catalog = load_catalog();
+        let floor = |id: &str| catalog.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("{id} is in the catalog")).min_score;
+        // Measured on the sample folder (see rag::MIN_SCORE).
+        assert_eq!(floor("nomic-embed-text-v1.5"), Some(0.45));
+        assert_eq!(floor("embeddinggemma-300m"), Some(0.2));
+        // Not measured yet: takes the default.
+        assert_eq!(floor("bge-m3"), None);
+        // Only embedding models have one, and every one given is a sane similarity.
+        for entry in &catalog {
+            if let Some(score) = entry.min_score {
+                assert_eq!(entry.r#type, "embed", "{} is not an embedding model", entry.id);
+                assert!((0.0..1.0).contains(&score), "{}: {score}", entry.id);
+            }
+        }
+    }
 
     #[test]
     fn a_model_on_its_way_is_shown_as_loading_not_missing() {

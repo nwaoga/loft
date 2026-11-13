@@ -314,6 +314,23 @@
     // Source panel and citations.
     await options.radio("Auto");
     await options.close();
+
+    // Small talk gets a friendly reply; anything else the files do not cover
+    // is declined, naming the folders Loft is here for.
+    await askAndWait("hi");
+    const hello = text($(".turn.last .answer"));
+    if (!hello || /couldn.t find|only really here/i.test(hello)) throw new Error(`a greeting should be answered as one: ${hello}`);
+    if ($(".turn.last .sources-toggle")) throw new Error("a greeting must not list sources");
+    await askAndWait("What is the capital of Australia?");
+    reply = text($(".turn.last .answer"));
+    if (!/couldn.t find that in your indexed files\. I.m only really here to talk about items in .*sample-docs/.test(reply)) {
+      throw new Error(`out of scope should be declined naming the folder: ${reply}`);
+    }
+    if ($(".turn.last .sources-toggle")) throw new Error("a decline must not list sources");
+    await log(`3k2 small talk and scope | hi: ${hello} | capital of Australia: ${reply}`);
+    $(".new-chat").click();
+    await sleep(300);
+
     await askAndWait("Who owns the supplier contract?");
     await askAndWait("And who signs off the wording?");
     const auto = `latest open: ${$$(".turn.last .source").length > 0}, earlier open: ${$$(".turn:not(.last) .source").length > 0}`;

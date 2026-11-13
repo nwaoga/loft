@@ -178,8 +178,9 @@ question ─► [rewrite if follow-up] ─► embed ─► search ─► select 
    on its own, guided by four worked examples. If the result is unusable, the previous
    question is searched for together with the new one.
 2. **Search**: the 6 nearest chunks by cosine similarity.
-3. **Select**: nothing if the best match is below 0.45; otherwise the matches within 0.12 of
-   the best, up to about 6,400 bytes.
+3. **Select**: nothing if the best match is below the embedding model's floor (`minScore` in
+   the catalog: 0.45 for Nomic, 0.20 for EmbeddingGemma, 0.45 where none is given); otherwise
+   the matches within 0.12 of the best, up to about 6,400 bytes.
 4. **Prompt**: rules, up to 4 earlier turns (about 2,400 bytes), the excerpts labelled with
    file and location, and the question.
 5. **Stream**: tokens are forwarded to the UI as events. Token counts come from the server's
@@ -234,6 +235,21 @@ leave that prompt byte-for-byte as tested:
 | Tone | Appends one rule. |
 | Answer from my files only, off | Swaps the "use only the excerpts" and refusal rules for "answer from general knowledge, starting with *Your indexed files don't cover this*". |
 | Temperature, max tokens | Passed to the server. |
+
+Two things are worked out per question rather than chosen (`rag.rs`):
+
+- **The decline names the folders.** `decline_message` is "I couldn't find that in your
+  indexed files." followed by "I'm only really here to talk about items in A, B and C." (the
+  last part of each folder's path; more than four become "A, B, C and N other folders"). Loft
+  says it itself when nothing in the index is close to the question, and the refusal rule of
+  the system prompt tells the model to say exactly that when the excerpts do not hold the
+  answer. With no folders the rule, and so the prompt, is the tuned one unchanged.
+- **Small talk skips the index.** `is_small_talk` recognises greetings, thanks, goodbyes and
+  "who are you" from a fixed list: at most 8 words, every one part of a listed phrase or a
+  filler word, so a real question is never taken for one. Such a message goes to the chat
+  model with its own short prompt (be brief and warm, say what Loft is for, state nothing
+  about the files), 80 tokens at most, no excerpts and no earlier turns. Small-talk turns are
+  also left out of the conversation memory sent with a follow-up.
 
 The remaining options (citations, source panel, streaming, memory) are handled in the UI.
 "Chat history" decides whether a new conversation is saved (`ask` is called with `save`); a
@@ -408,9 +424,12 @@ names the script to run. The user's own folders and settings are not read or cha
 ## Known limits
 
 - Built and tested on Windows only. The macOS and Linux paths exist but have never been run.
-- No model has been run on an NPU: none was available. CUDA and OpenVINO (on an Intel
-  processor and Intel graphics) were run on one laptop; the NPU's behaviour is known only
-  from llama.cpp's documentation.
+- An NPU has been tried on one machine with one model (see HANDOVER.md); CUDA on one
+  laptop. Other NPUs, drivers and models are unknown.
+- The relevance floor is per embedding model, because each model scores on its own scale
+  (best match per question on the sample folder: Nomic 0.47 to 0.58 for unrelated questions
+  and 0.57 to 0.84 for answerable ones; EmbeddingGemma 0.00 to 0.19 and 0.25 to 0.75). It has
+  been measured for those two only: BGE-M3 takes the default.
 - Energy use has not been measured: that needs the performance test to be run on battery.
 - The engine choices are global, not per model.
 - Code is indexed as plain text: chunks ignore function boundaries and search is by meaning

@@ -17,10 +17,15 @@ data, pick small models from a built-in list, and ask questions with cited sourc
 
 1. The question is embedded and the 6 nearest chunks are fetched from the index.
 2. Chunks well below the best match are dropped; the rest (up to ~6 KB) go into the prompt.
-3. The chat model answers from those excerpts only, streaming token by token. It is told to
-   reply "I couldn't find that in your indexed files." when the excerpts don't hold the answer;
-   in that case no sources are shown.
-4. The answer leads; its sources are in an "N sources" drawer under it (open for the newest
+3. The chat model answers from those excerpts only, streaming token by token. When the
+   excerpts don't hold the answer, or the request isn't about the files at all, the reply is
+   "I couldn't find that in your indexed files. I'm only really here to talk about items in
+   Documents and Notes." (your own folder names; up to four are named, then "and 2 other
+   folders"). No sources are shown with it.
+4. Small talk is the exception: "hi", "thanks", "how are you?", "who are you?" get a short
+   friendly reply from the chat model, with no search and no sources. Only short messages
+   made up entirely of such phrases count; "hi, when does the pilot start?" is a question.
+5. The answer leads; its sources are in an "N sources" drawer under it (open for the newest
    answer by default; see the Source panel option). The drawer shows the excerpts, and clicking one opens documents and pictures (PDF, Office, txt,
    md, png, jpg…) in their default app; code and scripts are only revealed in the file
    manager, never run. A PDF opens at the cited page when the default PDF app is a browser
@@ -56,7 +61,7 @@ when anything differs from the defaults.
 | **Response tone** | Natural, Professional (structured and direct) or Technical (exact names and values, code in backticks). Adds one rule. |
 | **Show citations** | Off hides the sources under answers. |
 | **Source panel** | Auto: the newest answer's sources are open, earlier ones folded. Always expanded. Collapsed by default. A drawer you open or close by hand stays that way. |
-| **Answer from my files only** | On (default): a question the files don't cover gets "I couldn't find that in your indexed files." Off: the model may answer from general knowledge, starting with "Your indexed files don't cover this." and listing no sources. |
+| **Answer from my files only** | On (default): a question the files don't cover gets "I couldn't find that in your indexed files. I'm only really here to talk about items in …" with your folder names. Off: the model may answer from general knowledge, starting with "Your indexed files don't cover this." and listing no sources. |
 | **Stream responses** | Off holds the answer back until it is complete. |
 | **Remember conversation context** | Off sends each question on its own, so follow-ups are not understood. |
 | **Chat history** | Save locally (the default: every conversation is kept in the [chat history](#chat-history)), Current session only (a new conversation lasts until Loft quits), or Don't save (forgotten when the panel closes). |
@@ -357,11 +362,14 @@ and NVIDIA RTX 4050 graphics, **no NPU**), which is not always what its document
   Gemma 3 4B and Phi-3.5 mini (Q4_K_M) are listed as passing; Loft's default Qwen 2.5 3B is
   not listed either way. It needs an Intel Core Ultra processor and the Intel NPU driver.
 
-**No model has been run on an NPU: the development machine has none.** Everything around it
-is real and tested (installing the engine, finding its devices, the launch settings, the check
-of the server's log, a real failing device, the fallback rules); the NPU's own behaviour is
-known only from documentation. Treat it as untried until *Try NPU now* reports a verified
-answer on your own machine.
+**On an NPU it has been run on one machine.** The development laptop has no NPU. On a second
+Windows laptop (Intel Core Ultra 9 386H, Intel AI Boost NPU, driver 32.0.100.4841) *Try NPU
+now* gave a verified answer with Qwen 2.5 3B at about 13 tokens a second, after about 45
+seconds of loading; the same model ran at 26 tokens a second on that machine's plain CPU
+engine and 122 on its NVIDIA card. OpenVINO's server also held 7 to 9 GB of memory there,
+against 3 to 4.4 GB for the other engines. The figures and the rest of that run are in
+[HANDOVER.md](HANDOVER.md). Other NPUs, drivers and models remain untried: treat yours as
+unknown until *Try NPU now* reports a verified answer on it.
 
 ### Test performance
 
@@ -478,11 +486,17 @@ to check the rest on other hardware and operating systems.
   clicking a source to open it, the tray icon and the global hotkey (they need a real click or
   key press), turning on Launch at login (only allowed in an installed build), and installing
   from the installers (they were built and their contents checked, not run).
-- **The NPU is untested.** No NPU was available, so no model has been run on one. See
+- **The NPU has been run on one machine, with one model.** See
   [OpenVINO and the NPU](#openvino-and-the-npu-what-experimental-means-here).
-- **CUDA and OpenVINO were run on one laptop** (see above). `fetch-llama cuda` /
+- **CUDA was run on one laptop, OpenVINO on two.** `fetch-llama cuda` /
   `fetch-llama openvino` share the rules of the in-app installer but have not themselves been
   run for those two engines.
+- **The relevance floor is measured for two embedding models only.** Each embedding model
+  scores on its own scale, so each has its own floor in `catalog.json` (`minScore`): 0.45 for
+  Nomic Embed Text and 0.20 for EmbeddingGemma, both measured on the sample folder. (With one
+  floor for both, EmbeddingGemma found nothing: it scores a relevant excerpt around 0.25 to
+  0.35.) **BGE-M3 has not been measured** and takes the default of 0.45, which may be wrong
+  for it. Other folders may sit differently from the sample one.
 - **Dragging the floating window, the tray icon and the hotkey need a real hand.** The test
   moves the window and calls what the tray icon calls; nobody has yet dragged it with a mouse
   or clicked the icon on macOS or Linux.

@@ -22,6 +22,11 @@ Smaller changes that came out of testing, worth knowing about:
 - Model servers are started in a scratch folder (`<temp>/loft-engine-work`), because engines
   write stray files into their working directory.
 - Choices are named device first: `NVIDIA GeForce RTX 4050 Laptop GPU (CUDA)`.
+- Added 13 November 2026: small talk ("hi", "thanks", "who are you?") gets a short friendly
+  reply instead of the refusal, and the refusal now ends with the user's folder names: "I
+  couldn't find that in your indexed files. I'm only really here to talk about items in
+  sample-docs." See "How answers work" in the README. Checked with Qwen 2.5 3B only; whether
+  other chat models repeat the longer refusal word for word is not known.
 
 ## 2. What was verified, and where
 
@@ -31,10 +36,10 @@ The development machine: Windows 11, Intel Core i7-12700H, Intel Iris Xe graphic
 
 | Check | Result on that machine |
 |---|---|
-| `cargo test --lib` | 84 passed, 10 ignored (the ignored ones need downloaded models) |
-| `rag::tests::end_to_end` (real models) | passed |
+| `cargo test --lib` | 87 passed, 10 ignored (the ignored ones need downloaded models) |
+| `rag::tests::end_to_end`; `indexer::tests::end_to_end` (real models) | passed |
 | `runtime::tests::each_target_runs_where_it_is_told` | passed: CPU only, Vulkan on the Intel graphics, Vulkan on the NVIDIA card, each confirmed from the server's log |
-| `scripts\win-smoke.bat` (UI test, about 60 steps) | passed, including floating style, tray mode and chat history |
+| `scripts\win-smoke.bat` (UI test, about 60 steps) | passed, including floating style, tray mode and chat history; also passed with EmbeddingGemma as the embedding model |
 | `scripts\win-smoke.bat smoke-restart.js` | passed: history intact after closing and reopening Loft |
 | `scripts\win-smoke.bat smoke-engines.js` (16 scenarios) | passed on the final build |
 | `scripts\win-smoke.bat smoke-optional-engines.js` | passed: CUDA and OpenVINO installed from Settings (real downloads, checksums verified) and every device of both tried |
@@ -93,12 +98,27 @@ The 30 GB figure must not be attributed to the NPU server alone. Energy was not 
 the laptop stayed plugged in. CUDA, the optional-engine installer smoke test, and the picture
 description model were not exercised on this machine.
 
-**Open retrieval issue:** With the user's Llama 3.2 / EmbeddingGemma pair, both smoke scripts
-stopped at their first sourced-answer check. The seven sample files and vectors were indexed,
-but the supplier-contract question returned "I couldn't find that in your indexed files" with
-no sources, including after the index-ready wait. The same scripts passed with Qwen/Nomic.
-Investigate EmbeddingGemma retrieval scores and the shared similarity threshold before
-claiming that pair works for this sample corpus.
+**Retrieval issue found here, since fixed:** With the user's Llama 3.2 / EmbeddingGemma pair,
+both smoke scripts stopped at their first sourced-answer check. The seven sample files and
+vectors were indexed, but the supplier-contract question returned "I couldn't find that in
+your indexed files" with no sources, including after the index-ready wait. The same scripts
+passed with Qwen/Nomic.
+
+The cause, measured afterwards on the first machine (13 November 2026): the floor below which
+nothing counts as relevant was one number, 0.45, measured with Nomic. EmbeddingGemma scores on
+a different scale. Best match per question on the sample folder's text files:
+
+| Embedding model | Unrelated questions | Answerable questions |
+|---|---|---|
+| Nomic Embed Text v1.5 | 0.47 to 0.58 | 0.57 to 0.84 |
+| EmbeddingGemma 300M | 0.00 to 0.19 | 0.25 to 0.75 |
+
+"Who owns the supplier contract?" scored 0.25 with EmbeddingGemma, so it was discarded before
+the chat model was asked. Each embedding model now has its own floor in `catalog.json`
+(`minScore`: 0.45 for Nomic, 0.20 for EmbeddingGemma). On the first machine `scripts\win-smoke.bat`
+then reached `[dev] 17 DONE` with Qwen 2.5 3B and EmbeddingGemma, and again with Qwen and
+Nomic. **Still to check:** the Llama 3.2 / EmbeddingGemma pair itself on this machine (the
+re-test used Qwen as the chat model), and BGE-M3, which has no measured floor.
 
 ## 3. What remains unverified
 
