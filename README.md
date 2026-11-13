@@ -119,7 +119,8 @@ after "When does the pilot start?" works. **New chat** starts over.
   matter: see [Chat history](#chat-history).
 - Before searching, the chat model rewrites a follow-up into a question that stands on its own
   ("Where does the pilot start?"), because searching for "Where?" finds nothing useful. If the
-  rewrite is unusable, the previous question is searched for together with the new one. This
+  rewrite is unusable, or a message such as "tell me about it" comes back unchanged, the
+  previous question is searched for together with the new one. This
   costs one short extra model call per follow-up; a first question skips it.
 - The prompt then holds the last 4 turns at most (about 2,400 bytes; long answers are cut to
   700 characters, oldest turns dropped first), the fresh excerpts, and the question.

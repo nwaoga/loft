@@ -343,7 +343,7 @@ const REWRITE_PROMPT: &str = "You rewrite the latest question of a conversation 
 /// Worked examples shown to the model before the real rewrite request; small
 /// models follow examples far better than rules. (earlier question, earlier
 /// answer, latest question, its rewrite)
-const REWRITE_EXAMPLES: [(&str, &str, &str, &str); 4] = [
+const REWRITE_EXAMPLES: [(&str, &str, &str, &str); 5] = [
     (
         "Who is the landlord of the Elm Street flat?",
         "The landlord is Mr Okafor.",
@@ -368,7 +368,40 @@ const REWRITE_EXAMPLES: [(&str, &str, &str, &str); 4] = [
         "Where?",
         "Where is the dentist appointment on 12 May?",
     ),
+    (
+        "What is the boiler service plan?",
+        "It covers a yearly service and parts for five years.",
+        "Tell me about it",
+        "Tell me about the boiler service plan",
+    ),
 ];
+
+/// Words that point back at an earlier turn. A message using one, which the
+/// model "rewrote" unchanged, still needs the earlier question to be found.
+const REFERS_BACK: &[&str] = &[
+    "it", "its", "that", "this", "those", "these", "they", "them", "their", "he", "him", "his", "she", "her",
+    "there", "then", "more", "else", "same", "above", "previous", "former", "latter",
+];
+
+/// True when `question` leans on the conversation: it uses a word such as
+/// "it", "that" or "more".
+fn refers_back(question: &str) -> bool {
+    question
+        .to_lowercase()
+        .replace(['\'', '’'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| REFERS_BACK.contains(&w))
+}
+
+/// The words of `s`, lower case, without punctuation (to compare a rewrite
+/// with the question it came from).
+fn plain_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
 /// One earlier exchange of the conversation, as the UI sends it back.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -650,6 +683,10 @@ fn clean_rewrite(raw: &str, question: &str) -> Option<String> {
     }
     // A rewrite adds what the question left out; one with fewer words lost something.
     if line.split_whitespace().count() < question.split_whitespace().count() {
+        return None;
+    }
+    // "Tell me about it" given back as is: the model did not resolve "it".
+    if refers_back(question) && plain_words(line) == plain_words(question) {
         return None;
     }
     Some(line.to_string())
@@ -1386,9 +1423,31 @@ mod tests {
             clean_rewrite("\n Rewritten question: \"Where does the pilot start?\"\nBecause it refers to…", "Where?").as_deref(),
             Some("Where does the pilot start?")
         );
-        // Unchanged is fine; dropping words is not.
-        assert_eq!(clean_rewrite("Is that every day?", "Is that every day?").as_deref(), Some("Is that every day?"));
+        // Unchanged is fine for a question that stands alone; dropping words is not.
+        assert_eq!(
+            clean_rewrite("When is the car insurance due?", "When is the car insurance due?").as_deref(),
+            Some("When is the car insurance due?")
+        );
         assert_eq!(clean_rewrite("Is every day?", "Is that every day?"), None);
+        // Unchanged is not a rewrite when the question points back ("it",
+        // "that", "more"): the earlier question is searched for with it.
+        assert_eq!(clean_rewrite("tell me about it", "tell me about it"), None);
+        assert_eq!(clean_rewrite("Tell me about it.", "tell me about it"), None);
+        assert_eq!(clean_rewrite("Is that every day?", "Is that every day?"), None);
+        assert_eq!(
+            clean_rewrite("tell me more about the hub stock count", "tell me more").as_deref(),
+            Some("tell me more about the hub stock count")
+        );
+    }
+
+    #[test]
+    fn follow_up_words_are_spotted() {
+        for q in ["tell me about it", "Tell me more", "what else?", "explain that", "Who owns them?", "What's its cost?"] {
+            assert!(refers_back(q), "{q:?} points back");
+        }
+        for q in ["When is the car insurance due?", "Who owns the till integration?", "Summarise the project plan"] {
+            assert!(!refers_back(q), "{q:?} stands alone");
+        }
         assert_eq!(clean_rewrite("", "Where?"), None);
         assert_eq!(clean_rewrite("  \n ", "Where?"), None);
         assert_eq!(clean_rewrite(NOT_FOUND_MESSAGE, "Where?"), None);
@@ -1706,7 +1765,12 @@ mod tests {
         // (question, words the answer must contain, words it must not,
         //  words the search query must contain, should it be declined)
         type Step = (&'static str, &'static [&'static str], &'static [&'static str], &'static [&'static str], bool);
-        let conversations: [&[Step]; 5] = [
+        let conversations: [&[Step]; 6] = [
+            &[
+                ("Who owns the supplier contract?", &["Priya"], &[], &[], false),
+                // A bare "it" must be searched for as the contract, not as typed.
+                ("Tell me about it", &["BeanWorks"], &[], &["contract"], false),
+            ],
             &[
                 ("When does the pilot start?", &["February"], &[], &[], false),
                 ("Where?", &["Quayside"], &[], &["pilot"], false),

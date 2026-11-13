@@ -182,8 +182,11 @@ question ─► [rewrite if follow-up] ─► embed ─► search ─► select 
 ```
 
 1. **Rewrite** (follow-ups only): the chat model turns "Where?" into a question that stands
-   on its own, guided by four worked examples. If the result is unusable, the previous
-   question is searched for together with the new one.
+   on its own, guided by five worked examples. If the result is unusable, the previous
+   question is searched for together with the new one. A rewrite that comes back unchanged
+   counts as unusable when the question points back at the conversation (`refers_back`: "it",
+   "that", "more", "else" and similar). Qwen 2.5 3B used to return "tell me about it" as is,
+   and searching for that alone found nothing.
 2. **Search**: the 6 nearest chunks by cosine similarity.
 3. **Select**: nothing if the best match is below the embedding model's floor (`minScore` in
    the catalog: 0.45 for Nomic, 0.20 for EmbeddingGemma, 0.45 where none is given); otherwise
