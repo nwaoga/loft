@@ -17,10 +17,21 @@ use crate::store::{Hit, Store};
 /// How many nearest chunks to pull from the index.
 pub const TOP_K: usize = 6;
 /// Best hit below this cosine similarity => "nothing relevant found", without
-/// calling the chat model. Measured with nomic-embed on small folders:
-/// unrelated questions score 0.47-0.54, answerable ones 0.50-0.80, so the two
-/// overlap. This floor only removes the clearly unrelated; in the overlap the
-/// chat model is told to say when the excerpts do not hold the answer.
+/// calling the chat model. This is the floor for Nomic Embed, and the default
+/// for a model whose catalog entry gives none (`minScore`).
+///
+/// Embedding models put their similarities on different scales, so the floor
+/// belongs to the model. Measured on the sample folder, best match per question:
+///
+/// | model          | unrelated   | answerable  | floor |
+/// |----------------|-------------|-------------|-------|
+/// | Nomic Embed    | 0.47 - 0.58 | 0.57 - 0.84 | 0.45  |
+/// | EmbeddingGemma | 0.00 - 0.19 | 0.25 - 0.75 | 0.20  |
+///
+/// With Nomic the two overlap: the floor only removes the clearly unrelated,
+/// and in the overlap the chat model is told to say when the excerpts do not
+/// hold the answer. Nomic's floor applied to EmbeddingGemma threw away most
+/// answerable questions.
 pub const MIN_SCORE: f32 = 0.45;
 /// Hits this far below the best one are noise and are left out.
 pub const SCORE_MARGIN: f32 = 0.12;
@@ -48,8 +59,136 @@ const MAX_REWRITE_TOKENS: u32 = 80;
 pub const NO_INDEX_MESSAGE: &str =
     "Nothing is indexed yet. Add a folder in the Folders tab, wait for it to finish indexing, then ask again.";
 /// Said when nothing relevant was retrieved, and the sentence the chat model
-/// is told to reply with when the excerpts do not hold the answer.
+/// is told to reply with when the excerpts do not hold the answer. When Loft
+/// knows the user's folders, `decline_message` adds what it is here for.
 pub const NOT_FOUND_MESSAGE: &str = "I couldn't find that in your indexed files.";
+/// How the second half of a decline starts (followed by the folder names).
+pub const SCOPE_MARKER: &str = "I'm only really here to talk about items in";
+/// A folder name longer than this is cut when it is named in a reply.
+const FOLDER_NAME_CHARS: usize = 40;
+
+/// The name a folder goes by in a reply: the last part of its path.
+fn folder_name(path: &str) -> Option<String> {
+    let name = path.trim().trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next()?;
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    let name = truncate_chars(name.trim(), FOLDER_NAME_CHARS).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The user's folders as they read in a sentence: "Docs", "Docs and Notes",
+/// "Docs, Notes and Work", "Docs, Notes, Work and 2 other folders". `None`
+/// when there are none.
+pub fn folder_list(folders: &[String]) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in folders.iter().filter_map(|f| folder_name(f)) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Some(match names.len() {
+        0 => return None,
+        1 => names.remove(0),
+        2..=4 => {
+            let last = names.pop().unwrap_or_default();
+            format!("{} and {last}", names.join(", "))
+        }
+        n => format!("{} and {} other folders", names[..3].join(", "), n - 3),
+    })
+}
+
+/// What Loft says when the files do not cover the request: that it could not
+/// find it, and which folders it is here to talk about.
+pub fn decline_message(folders: &[String]) -> String {
+    match folder_list(folders) {
+        Some(list) => format!("{NOT_FOUND_MESSAGE} {SCOPE_MARKER} {list}."),
+        None => NOT_FOUND_MESSAGE.to_string(),
+    }
+}
+
+/// The decline rule of the system prompt, for a decline other than the plain one.
+fn decline_rule(decline: &str) -> String {
+    format!("- If the excerpts do not contain the answer, or the request is not a question about the files, reply with exactly these words and nothing else: {decline}")
+}
+
+// ------------------------------ small talk ---------------------------------
+//
+// "hi", "thanks", "who are you" are not questions about the files: searching
+// the index for them finds nothing and the reply used to be the decline. They
+// are recognised here, by a fixed list (no model call, nothing to get wrong on
+// a real question), and answered by the chat model in a sentence or two,
+// without excerpts.
+
+/// A longer message is a request, whatever it starts with.
+const SMALL_TALK_MAX_WORDS: usize = 8;
+const SMALL_TALK_TOKENS: u32 = 80;
+const SMALL_TALK_TEMPERATURE: f32 = 0.6;
+
+/// Greetings, thanks, goodbyes, "how are you", "who are you" and bare
+/// acknowledgements, lower case with apostrophes dropped.
+const SMALL_TALK: &[&str] = &[
+    "hi", "hello", "hey", "hiya", "heya", "yo", "howdy", "hallo", "greetings", "sup", "morning", "evening",
+    "good morning", "good afternoon", "good evening", "good day", "whats up", "what is up", "wassup",
+    "how are you", "how are you doing", "how are you today", "hows it going", "how is it going", "how are things",
+    "how do you do", "you ok", "are you ok", "you alright", "are you there",
+    "thanks", "thank you", "thx", "ty", "cheers", "many thanks", "much appreciated", "appreciate it",
+    "bye", "goodbye", "good night", "goodnight", "see you", "see ya", "see you later", "take care",
+    "who are you", "what are you", "what can you do", "what do you do", "whats your name", "what is your name",
+    "how can you help", "what can you help with", "can you help", "help", "how do you work",
+    "are you an ai", "are you a bot", "are you real",
+    "ok", "okay", "k", "cool", "great", "good", "fine", "nice", "awesome", "perfect", "brilliant", "got it",
+    "sounds good", "no problem", "no worries", "youre welcome", "lol", "haha", "wow", "well done", "good job",
+    "nice one", "sorry", "nice to meet you", "pleased to meet you", "im good", "im fine", "im well", "not bad",
+];
+/// Words that may sit around those without making the message a request.
+const SMALL_TALK_FILLERS: &[&str] = &[
+    "loft", "there", "and", "so", "very", "much", "please", "you", "too", "then", "mate", "buddy", "friend",
+    "again", "today", "all", "everyone", "a", "lot", "really", "well", "oh", "ah", "hmm", "um", "for", "that",
+    "your", "the", "me", "now", "just",
+];
+
+/// True for a greeting, thanks, goodbye or the like: a short message made up
+/// entirely of small-talk phrases. Anything else in it makes it a request.
+pub fn is_small_talk(message: &str) -> bool {
+    let words: Vec<String> = message
+        .to_lowercase()
+        .replace(['\'', '’'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() || words.len() > SMALL_TALK_MAX_WORDS {
+        return false;
+    }
+    // `said`: a phrase has been seen (fillers alone are not small talk).
+    fn fits(words: &[String], said: bool) -> bool {
+        if words.is_empty() {
+            return said;
+        }
+        if SMALL_TALK_FILLERS.contains(&words[0].as_str()) && fits(&words[1..], said) {
+            return true;
+        }
+        SMALL_TALK.iter().any(|phrase| {
+            let n = phrase.split(' ').count();
+            n <= words.len() && phrase.split(' ').zip(words).all(|(p, w)| p == w) && fits(&words[n..], true)
+        })
+    }
+    fits(&words, false)
+}
+
+const SMALL_TALK_PROMPT: &str = "You are Loft, a friendly assistant that lives on the user's own computer. Your only job is answering questions about the files in the folders the user has added to you.\n\
+The user has just sent a greeting or a bit of small talk, not a question about their files. Reply in one or two short, warm sentences and nothing more. Do not state any facts about what the files contain, do not make anything up, and do not answer general-knowledge questions.";
+
+/// Chat messages for a reply to small talk: no excerpts, no earlier turns.
+fn small_talk_messages(message: &str, folders: &[String]) -> serde_json::Value {
+    let scope = match folder_list(folders) {
+        Some(list) => format!("The user's folders: {list}. If it fits, mention that you can answer questions about the items in them."),
+        None => "The user has not added a folder yet. If it fits, mention that they can add one in the Folders tab and then ask about what is in it.".to_string(),
+    };
+    serde_json::json!([
+        { "role": "system", "content": format!("{SMALL_TALK_PROMPT}\n{scope}") },
+        { "role": "user", "content": truncate_chars(message, MAX_QUESTION_CHARS) },
+    ])
+}
 
 // Deliberately asks for no citation numbers: small models get them wrong
 // ("[5]" with three excerpts), and the sources are listed under the answer.
@@ -137,8 +276,15 @@ impl Default for Options {
 }
 
 impl Options {
-    /// The rules the chat model answers under.
+    /// The rules the chat model answers under, with the plain decline.
+    #[cfg(test)]
     fn system_prompt(&self) -> String {
+        self.system_prompt_for(NOT_FOUND_MESSAGE)
+    }
+
+    /// The rules the chat model answers under. `decline` is what it is to
+    /// say when the files do not cover the request (see `decline_message`).
+    fn system_prompt_for(&self, decline: &str) -> String {
         let mut prompt = SYSTEM_PROMPT.to_string();
         match self.length {
             Length::Concise => prompt = prompt.replace(LENGTH_RULE_BALANCED, LENGTH_RULE_CONCISE),
@@ -149,6 +295,8 @@ impl Options {
             prompt = prompt
                 .replace(RULE_ONLY_EXCERPTS, RULE_PREFER_EXCERPTS)
                 .replace(RULE_DECLINE, RULE_GENERAL);
+        } else if decline != NOT_FOUND_MESSAGE {
+            prompt = prompt.replace(RULE_DECLINE, &decline_rule(decline));
         }
         match self.tone {
             Tone::Natural => {}
@@ -232,11 +380,13 @@ pub struct Turn {
 /// True when the model's answer is (a variation of) the "not found" sentence.
 pub fn is_decline(answer: &str) -> bool {
     let a = answer.trim().to_lowercase().replace('’', "'");
-    a.len() < 200
-        && (a.contains("indexed files") || a.contains("excerpts"))
-        && ["couldn't find", "could not find", "cannot find", "can't find", "do not contain", "does not contain", "don't contain"]
-            .iter()
-            .any(|p| a.contains(p))
+    // (Long enough for the decline that names the user's folders.)
+    a.len() < 400
+        && (a.contains(&SCOPE_MARKER.to_lowercase())
+            || (a.contains("indexed files") || a.contains("excerpts"))
+                && ["couldn't find", "could not find", "cannot find", "can't find", "do not contain", "does not contain", "don't contain"]
+                    .iter()
+                    .any(|p| a.contains(p)))
 }
 
 /// A retrieved chunk shown to the user under the answer.
@@ -259,6 +409,10 @@ pub struct Endpoints {
     pub embed_port: u16,
     pub chat_port: u16,
     pub query_prefix: String,
+    /// The embedding model's relevance floor (see `MIN_SCORE`).
+    pub min_score: f32,
+    /// The paths of the user's folders, named when a request is declined.
+    pub folders: Vec<String>,
     pub options: Options,
 }
 
@@ -382,15 +536,15 @@ pub async fn retrieve(
 /// Choose which hits go into the prompt (and are shown as sources): nothing
 /// when even the best one is a weak match; otherwise the hits close to the
 /// best one, up to the context budget.
-pub fn select_context(hits: Vec<Hit>) -> Vec<Hit> {
+pub fn select_context(hits: Vec<Hit>, min_score: f32) -> Vec<Hit> {
     let top = match hits.first() {
-        Some(h) if h.score >= MIN_SCORE => h.score,
+        Some(h) if h.score >= min_score => h.score,
         _ => return Vec::new(),
     };
     let mut used = 0usize;
     let mut out = Vec::new();
     for hit in hits {
-        if hit.score < MIN_SCORE || hit.score < top - SCORE_MARGIN {
+        if hit.score < min_score || hit.score < top - SCORE_MARGIN {
             break; // hits are sorted, the rest are weaker still
         }
         if !out.is_empty() && used + hit.text.len() > CONTEXT_BUDGET {
@@ -419,14 +573,14 @@ pub fn to_sources(hits: &[Hit]) -> Vec<Source> {
 
 /// The earlier turns worth sending with a follow-up: the most recent ones
 /// that fit the limits, oldest first, with long text cut. Turns that have no
-/// answer (stopped at once, nothing indexed) are skipped.
+/// answer (stopped at once, nothing indexed) and small talk are skipped.
 pub fn recent_history(history: &[Turn]) -> Vec<Turn> {
     let mut used = 0usize;
     let mut out = Vec::new();
     for turn in history.iter().rev() {
         let question = truncate_chars(turn.question.trim(), HISTORY_QUESTION_CHARS);
         let answer = truncate_chars(turn.answer.trim(), HISTORY_ANSWER_CHARS);
-        if question.is_empty() || answer.is_empty() || answer == NO_INDEX_MESSAGE {
+        if question.is_empty() || answer.is_empty() || answer == NO_INDEX_MESSAGE || is_small_talk(question) {
             continue;
         }
         let size = question.len() + answer.len();
@@ -531,9 +685,10 @@ pub fn build_messages(
     history: &[Turn],
     context: &[Hit],
     options: &Options,
+    decline: &str,
 ) -> serde_json::Value {
     let mut messages = Vec::new();
-    let rules = options.system_prompt();
+    let rules = options.system_prompt_for(decline);
     if history.is_empty() {
         messages.push(serde_json::json!({ "role": "system", "content": rules }));
     } else {
@@ -798,6 +953,31 @@ pub async fn answer(
         return Err("Type a question first.".into());
     }
 
+    // A greeting or thanks is answered as one: no search, no excerpts.
+    if is_small_talk(question) {
+        let messages = small_talk_messages(question, &ep.folders);
+        let output = stream_chat(ep.chat_port, &messages, SMALL_TALK_TOKENS, SMALL_TALK_TEMPERATURE, &cancel, &mut on_token).await?;
+        let stats = match output.usage {
+            Some(usage) => Some(Stats {
+                prompt_tokens: usage.prompt_tokens,
+                answer_tokens: usage.answer_tokens,
+                context_size: context_size(ep.chat_port).await,
+                tokens_per_second: usage.tokens_per_second,
+                turns_sent: 0,
+                turns_dropped: 0,
+                excerpts: 0,
+            }),
+            None => None,
+        };
+        return Ok(Outcome {
+            answer: output.text,
+            sources: Vec::new(),
+            stats,
+            top_score: None,
+            query: question.to_string(),
+        });
+    }
+
     let indexed = store
         .lock()
         .map_err(|_| "index is unavailable".to_string())?
@@ -815,7 +995,12 @@ pub async fn answer(
 
     let answered_turns = history
         .iter()
-        .filter(|t| !t.question.trim().is_empty() && !t.answer.trim().is_empty() && t.answer.trim() != NO_INDEX_MESSAGE)
+        .filter(|t| {
+            !t.question.trim().is_empty()
+                && !t.answer.trim().is_empty()
+                && t.answer.trim() != NO_INDEX_MESSAGE
+                && !is_small_talk(&t.question)
+        })
         .count();
     let history = recent_history(history);
     let turns_dropped = answered_turns.saturating_sub(history.len());
@@ -836,13 +1021,14 @@ pub async fn answer(
 
     let hits = retrieve(store, ep.embed_port, &ep.query_prefix, &query).await?;
     let top_score = hits.first().map(|h| h.score);
-    let context = select_context(hits);
-    // Nothing relevant in the files. Say so without calling the model, unless
-    // the user allows general-knowledge answers.
+    let context = select_context(hits, ep.min_score);
+    // Nothing relevant in the files. Say so, and what Loft is here for,
+    // without calling the model, unless the user allows general-knowledge answers.
+    let decline = decline_message(&ep.folders);
     if context.is_empty() && ep.options.files_only {
-        on_token(NOT_FOUND_MESSAGE);
+        on_token(&decline);
         return Ok(Outcome {
-            answer: NOT_FOUND_MESSAGE.into(),
+            answer: decline,
             sources: Vec::new(),
             stats: None,
             top_score,
@@ -862,7 +1048,7 @@ pub async fn answer(
         });
     }
 
-    let messages = build_messages(question, &query, &history, &context, &ep.options);
+    let messages = build_messages(question, &query, &history, &context, &ep.options, &decline);
     let output = stream_chat(
         ep.chat_port,
         &messages,
@@ -982,26 +1168,38 @@ mod tests {
     #[test]
     fn select_context_applies_threshold_margin_and_budget() {
         // Weak best hit: nothing is used.
-        assert!(select_context(vec![hit("/a.md", "x", None, MIN_SCORE - 0.01)]).is_empty());
-        assert!(select_context(Vec::new()).is_empty());
+        assert!(select_context(vec![hit("/a.md", "x", None, MIN_SCORE - 0.01)], MIN_SCORE).is_empty());
+        assert!(select_context(Vec::new(), MIN_SCORE).is_empty());
+
+        // The floor belongs to the embedding model. EmbeddingGemma scores a
+        // relevant excerpt around 0.25 to 0.35 and an unrelated one below 0.2:
+        // its floor keeps the first, Nomic's would have dropped it, and
+        // neither keeps the second.
+        let gemma_floor = 0.2;
+        assert_eq!(select_context(vec![hit("/a.md", "relevant", None, 0.25)], gemma_floor).len(), 1);
+        assert!(select_context(vec![hit("/a.md", "relevant", None, 0.25)], MIN_SCORE).is_empty());
+        assert!(select_context(vec![hit("/a.md", "unrelated", None, 0.19)], gemma_floor).is_empty());
+        // Weaker hits under the floor are left out even when the best is over it.
+        let kept = select_context(vec![hit("/a.md", "over", None, 0.26), hit("/b.md", "under", None, 0.18)], gemma_floor);
+        assert_eq!(kept.iter().map(|h| h.text.as_str()).collect::<Vec<_>>(), ["over"]);
 
         // Hits far below the best one are dropped.
-        let kept = select_context(vec![
-            hit("/a.md", "best", None, 0.80),
-            hit("/b.md", "close", None, 0.80 - SCORE_MARGIN + 0.01),
-            hit("/c.md", "far", None, 0.80 - SCORE_MARGIN - 0.01),
-        ]);
+        let kept = select_context(
+            vec![
+                hit("/a.md", "best", None, 0.80),
+                hit("/b.md", "close", None, 0.80 - SCORE_MARGIN + 0.01),
+                hit("/c.md", "far", None, 0.80 - SCORE_MARGIN - 0.01),
+            ],
+            MIN_SCORE,
+        );
         assert_eq!(kept.iter().map(|h| h.text.as_str()).collect::<Vec<_>>(), ["best", "close"]);
 
         // The budget caps how much text goes in, but the best hit always does.
         let big = "y".repeat(CONTEXT_BUDGET - 10);
-        let kept = select_context(vec![
-            hit("/a.md", &big, None, 0.80),
-            hit("/b.md", "this one no longer fits", None, 0.79),
-        ]);
+        let kept = select_context(vec![hit("/a.md", &big, None, 0.80), hit("/b.md", "this one no longer fits", None, 0.79)], MIN_SCORE);
         assert_eq!(kept.len(), 1);
         let huge = "z".repeat(CONTEXT_BUDGET * 2);
-        assert_eq!(select_context(vec![hit("/a.md", &huge, None, 0.9)]).len(), 1);
+        assert_eq!(select_context(vec![hit("/a.md", &huge, None, 0.9)], MIN_SCORE).len(), 1);
     }
 
     #[test]
@@ -1012,7 +1210,7 @@ mod tests {
             hit("/docs/budget.xlsx", "Forklift lease 450", Some(1), 0.7),
             hit("/docs/manual.pdf", "Descale monthly.", Some(12), 0.7),
         ];
-        let messages = build_messages("when does it start?", "when does it start?", &[], &context, &Options::default());
+        let messages = build_messages("when does it start?", "when does it start?", &[], &context, &Options::default(), NOT_FOUND_MESSAGE);
         assert_eq!(messages[0]["content"], SYSTEM_PROMPT, "the default options leave the tuned prompt untouched");
         assert_eq!(messages.as_array().unwrap().len(), 2);
         let user = messages[1]["content"].as_str().unwrap();
@@ -1079,7 +1277,7 @@ mod tests {
     fn follow_up_prompt_carries_the_conversation() {
         let context = vec![hit("/docs/plan.md", "The pilot starts on 3 February at Quayside.", None, 0.8)];
         let history = vec![turn("When does the pilot start?", "The pilot starts on 3 February.")];
-        let messages = build_messages("Where?", "Where does the pilot start?", &history, &context, &Options::default());
+        let messages = build_messages("Where?", "Where does the pilot start?", &history, &context, &Options::default(), NOT_FOUND_MESSAGE);
         let m = messages.as_array().unwrap();
         assert_eq!(m.len(), 4);
         assert!(m[0]["content"].as_str().unwrap().starts_with(SYSTEM_PROMPT));
@@ -1091,7 +1289,7 @@ mod tests {
         assert!(user.ends_with("\nQuestion: Where?\n(In full: Where does the pilot start?)"));
 
         // A follow-up that already stands on its own is not repeated.
-        let messages = build_messages("Who owns it?", "who owns it? ", &history, &context, &Options::default());
+        let messages = build_messages("Who owns it?", "who owns it? ", &history, &context, &Options::default(), NOT_FOUND_MESSAGE);
         assert!(messages[3]["content"].as_str().unwrap().ends_with("\nQuestion: Who owns it?"));
 
         // The rewrite request shows the conversation and the new question.
@@ -1169,7 +1367,7 @@ mod tests {
         // A follow-up keeps the swapped rules, and a question with no
         // excerpts (general knowledge allowed) says that none matched.
         let history = vec![turn("When?", "3 February.")];
-        let messages = build_messages("Where?", "Where?", &history, &[], &with(|o| o.files_only = false));
+        let messages = build_messages("Where?", "Where?", &history, &[], &with(|o| o.files_only = false), NOT_FOUND_MESSAGE);
         let rules = messages[0]["content"].as_str().unwrap();
         assert!(rules.contains(RULE_GENERAL) && rules.ends_with(FOLLOW_UP_RULE));
         assert_eq!(
@@ -1206,6 +1404,89 @@ mod tests {
         assert!(!is_decline("Priya owns the supplier contract with BeanWorks."));
         assert!(!is_decline("The pilot starts on 3 February."));
         assert!(!is_decline(""));
+        // The decline that names the folders, and a model's variation of it.
+        let folders = ["C:\\Users\\me\\Documents".to_string(), "D:\\Work\\Contracts\\".to_string()];
+        assert!(is_decline(&decline_message(&folders)));
+        assert!(is_decline("I’m only really here to talk about items in Documents and Contracts."));
+    }
+
+    #[test]
+    fn a_decline_names_the_users_folders() {
+        let paths = |list: &[&str]| list.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        // Nothing to name: the plain sentence, and the tuned prompt untouched.
+        assert_eq!(folder_list(&[]), None);
+        assert_eq!(decline_message(&[]), NOT_FOUND_MESSAGE);
+        assert_eq!(Options::default().system_prompt_for(&decline_message(&[])), SYSTEM_PROMPT);
+
+        // Folders go by the last part of their path, on any system.
+        assert_eq!(folder_list(&paths(&["C:\\Users\\me\\Documents"])).as_deref(), Some("Documents"));
+        assert_eq!(folder_list(&paths(&["/home/me/notes/", "C:\\Work\\Contracts\\"])).as_deref(), Some("notes and Contracts"));
+        assert_eq!(folder_list(&paths(&["/a/One", "/a/Two", "/a/Three"])).as_deref(), Some("One, Two and Three"));
+        assert_eq!(
+            folder_list(&paths(&["/a/One", "/a/Two", "/a/Three", "/a/Four", "/a/Five"])).as_deref(),
+            Some("One, Two, Three and 2 other folders")
+        );
+        // The same name twice is said once; a whole drive goes by its letter.
+        assert_eq!(folder_list(&paths(&["/a/Docs", "/b/Docs", "D:\\"])).as_deref(), Some("Docs and D:"));
+        // A name cannot break out of its sentence or run on.
+        let odd = format!("/a/line\nbreak{}", "x".repeat(100));
+        let named = folder_list(&[odd]).unwrap();
+        assert!(!named.contains('\n') && named.chars().count() <= FOLDER_NAME_CHARS, "{named}");
+
+        let decline = decline_message(&paths(&["C:\\Users\\me\\Documents", "D:\\Photos"]));
+        assert_eq!(decline, "I couldn't find that in your indexed files. I'm only really here to talk about items in Documents and Photos.");
+
+        // The prompt tells the model to say exactly that, and nothing else changes.
+        let prompt = Options::default().system_prompt_for(&decline);
+        assert_eq!(prompt, SYSTEM_PROMPT.replace(RULE_DECLINE, &decline_rule(&decline)));
+        assert!(prompt.contains(&format!("reply with exactly these words and nothing else: {decline}\n")));
+        // With general knowledge allowed there is no decline to word.
+        let mut open = Options::default();
+        open.files_only = false;
+        assert_eq!(open.system_prompt_for(&decline), open.system_prompt());
+        let messages = build_messages("Where?", "Where?", &[], &[], &Options::default(), &decline);
+        assert!(messages[0]["content"].as_str().unwrap().contains(&decline));
+    }
+
+    #[test]
+    fn small_talk_is_told_from_a_question() {
+        for message in [
+            "hi", "Hi!", "hello there", "Hey Loft", "good morning", "Good morning, Loft!", "hey, how are you?",
+            "How's it going?", "what's up", "thanks", "Thank you very much!", "thanks for your help", "ok thanks",
+            "cheers mate", "great, thanks a lot", "bye", "see you later", "who are you?", "What can you do?",
+            "what can you do for me", "help", "can you help me?", "ok", "cool", "nice one", "I’m good, thanks",
+            "you're welcome", "lol", "hi hi",
+        ] {
+            assert!(is_small_talk(message), "should be small talk: {message:?}");
+        }
+        for message in [
+            "", "?", "loft", "you", "so then", // nothing said
+            "hi, when does the pilot start?", "thanks, and who owns the supplier contract?", "ok so where is it",
+            "who are the owners?", "what can you tell me about the pilot", "can you help me find the contract",
+            "what is the capital of Australia?", "who is tuan", "who is he", "Where?", "and the budget?",
+            "good morning routine notes", "help desk rota", "hello world program", "nice restaurants in the notes",
+            "great expectations summary", "how are you doing with the pilot", "what is this",
+            "hi hi hi hi hi hi hi hi hi", // too long to be a greeting
+        ] {
+            assert!(!is_small_talk(message), "should be a question: {message:?}");
+        }
+
+        // The reply is asked for without excerpts, and told which folders there are.
+        let messages = small_talk_messages("hi", &["C:\\Users\\me\\Documents".to_string()]);
+        assert_eq!(messages.as_array().unwrap().len(), 2);
+        let rules = messages[0]["content"].as_str().unwrap();
+        assert!(rules.starts_with(SMALL_TALK_PROMPT) && rules.contains("The user's folders: Documents."), "{rules}");
+        assert_eq!(messages[1]["content"], "hi");
+        let none = small_talk_messages("hi", &[]);
+        assert!(none[0]["content"].as_str().unwrap().contains("has not added a folder yet"));
+
+        // A greeting earlier in the conversation is not a turn a follow-up refers to.
+        let kept = recent_history(&[
+            turn("hi", "Hello! Ask me about your files."),
+            turn("When does the pilot start?", "On 3 February."),
+            turn("thanks", "You're welcome!"),
+        ]);
+        assert_eq!(kept, vec![turn("When does the pilot start?", "On 3 February.")]);
     }
 
     #[test]
@@ -1260,8 +1541,15 @@ mod tests {
             embed_port,
             chat_port,
             query_prefix: "search_query: ".into(),
+            min_score: MIN_SCORE,
+            folders: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("sample-docs").to_string_lossy().into_owned()],
             options: Options::default(),
         };
+
+        // Small talk is answered even with nothing indexed, by the model.
+        let hello = answer(&store, &ep, "hi", &[], || false, |_| {}, |_| {}).await.unwrap();
+        eprintln!("\nhi (nothing indexed): {}", hello.answer.trim());
+        assert!(!hello.answer.trim().is_empty() && hello.answer != NO_INDEX_MESSAGE && hello.stats.is_some());
 
         // Nothing indexed yet: a clear message, no model call.
         let empty = answer(&store, &ep, "when does the pilot start?", &[], || false, |_| {}, |_| {})
@@ -1571,6 +1859,53 @@ mod tests {
             eprintln!("\n{name} tone: {}", out.answer.trim());
             if !out.answer.contains("Tomasz") || out.sources.is_empty() {
                 failures.push(format!("{name} tone: wrong or unsourced answer: {}", out.answer.trim()));
+            }
+        }
+
+        // Small talk gets a short friendly reply: not the decline, no sources,
+        // no facts from the files.
+        for message in ["hi", "Hey Loft, how are you?", "thanks!", "who are you?"] {
+            let mut streamed = String::new();
+            let out = answer(&store, &ep, message, &[], || false, |_| {}, |t| streamed.push_str(t)).await.unwrap();
+            eprintln!("\nsmall talk: {message}\n   {}", out.answer.trim());
+            let reply = out.answer.trim();
+            if reply.is_empty() || is_decline(reply) || is_general(reply) || reply.chars().count() > 400 {
+                failures.push(format!("small talk {message:?}: not a short friendly reply: {reply}"));
+            }
+            if !out.sources.is_empty() || out.top_score.is_some() {
+                failures.push(format!("small talk {message:?}: the index was searched or sources shown"));
+            }
+            if streamed != out.answer || out.stats.map(|s| s.excerpts) != Some(0) {
+                failures.push(format!("small talk {message:?}: not streamed, or excerpts were sent"));
+            }
+            for fact in ["Priya", "Tomasz", "BeanWorks", "February"] {
+                if reply.contains(fact) {
+                    failures.push(format!("small talk {message:?}: states a fact from the files ({fact}): {reply}"));
+                }
+            }
+        }
+        // A greeting does not get in the way of the follow-up after it.
+        let after = [
+            Turn { question: "When does the pilot start?".into(), answer: "The pilot starts on 3 February.".into() },
+            Turn { question: "thanks".into(), answer: "You're welcome!".into() },
+        ];
+        let out = answer(&store, &ep, "Where?", &after, || false, |_| {}, |_| {}).await.unwrap();
+        eprintln!("\nafter small talk: Where? (searched for: {})\n   {}", out.query, out.answer.trim());
+        if !out.query.to_lowercase().contains("pilot") {
+            failures.push(format!("follow-up after small talk lost its subject: {}", out.query));
+        }
+
+        // What the files do not cover is declined, naming the folder: by Loft
+        // itself when nothing is close, by the model when something is.
+        let scoped = decline_message(&ep.folders);
+        assert!(scoped.ends_with("items in sample-docs."), "{scoped}");
+        for question in ["What is the capital of Australia?", "What is the refund policy for online orders?", "Write me a poem about the sea."] {
+            let out = answer(&store, &ep, question, &[], || false, |_| {}, |_| {}).await.unwrap();
+            eprintln!("\nout of scope: {question} (best score {:?}, model {})\n   {}", out.top_score, out.stats.is_some(), out.answer.trim());
+            if !is_decline(&out.answer) || !out.sources.is_empty() {
+                failures.push(format!("out of scope {question:?}: not declined: {}", out.answer.trim()));
+            } else if !out.answer.contains("sample-docs") {
+                failures.push(format!("out of scope {question:?}: the decline does not name the folder: {}", out.answer.trim()));
             }
         }
 

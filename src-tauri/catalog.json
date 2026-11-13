@@ -66,6 +66,7 @@
       "file": "nomic-embed-text-v1.5.f16.gguf",
       "docPrefix": "search_document: ",
       "queryPrefix": "search_query: ",
+      "minScore": 0.45,
       "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf",
       "sha256": "f7af6f66802f4df86eda10fe9bbcfc75c39562bed48ef6ace719a251cf1c2fdb",
       "recommended": true
@@ -95,6 +96,7 @@
       "file": "embeddinggemma-300M-Q8_0.gguf",
       "docPrefix": "title: none | text: ",
       "queryPrefix": "task: search result | query: ",
+      "minScore": 0.2,
       "url": "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf",
       "sha256": "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63"
     },

@@ -38,7 +38,7 @@ sha2 = "0.10"                                  # verify downloaded models
 
 [target.'cfg(windows)'.dependencies]
 # Job object so llama-server processes die with the app.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
 # Windows' own OCR engine and PDF renderer, for images and scanned PDF pages
 # (the same `windows` crate Tauri already builds).
 windows = { version = "0.62", features = [

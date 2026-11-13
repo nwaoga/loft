@@ -314,6 +314,23 @@
     // Source panel and citations.
     await options.radio("Auto");
     await options.close();
+
+    // Small talk gets a friendly reply; anything else the files do not cover
+    // is declined, naming the folders Loft is here for.
+    await askAndWait("hi");
+    const hello = text($(".turn.last .answer"));
+    if (!hello || /couldn.t find|only really here/i.test(hello)) throw new Error(`a greeting should be answered as one: ${hello}`);
+    if ($(".turn.last .sources-toggle")) throw new Error("a greeting must not list sources");
+    await askAndWait("What is the capital of Australia?");
+    reply = text($(".turn.last .answer"));
+    if (!/couldn.t find that in your indexed files\. I.m only really here to talk about items in .*sample-docs/.test(reply)) {
+      throw new Error(`out of scope should be declined naming the folder: ${reply}`);
+    }
+    if ($(".turn.last .sources-toggle")) throw new Error("a decline must not list sources");
+    await log(`3k2 small talk and scope | hi: ${hello} | capital of Australia: ${reply}`);
+    $(".new-chat").click();
+    await sleep(300);
+
     await askAndWait("Who owns the supplier contract?");
     await askAndWait("And who signs off the wording?");
     const auto = `latest open: ${$$(".turn.last .source").length > 0}, earlier open: ${$$(".turn:not(.last) .source").length > 0}`;
@@ -697,6 +714,29 @@
     await waitFor(() => $(".tab-content.shown .settings"), 3000, "Settings to open");
     await sleep(500);
     await log(`12 settings | ${text($(".tab-content.shown")).slice(0, 330)}`);
+
+    // Usage: its own view from the header, with real figures for both model
+    // servers and Loft itself. It is no longer inside Settings.
+    if (text($(".performance")).includes("What Loft is using")) throw new Error("usage is still shown in Settings");
+    $('[aria-label="Usage"]').click();
+    await waitFor(() => $(".tab-content.shown .usage-view .part"), 8000, "the usage view");
+    await sleep(2500); // the second reading has processor figures
+    const parts = $$(".usage-view .part").map((p) => text(p.querySelector(".part-name")));
+    for (const want of ["Chat model", "Embedding model", "Loft and its window"]) {
+      if (!parts.includes(want)) throw new Error(`usage view lacks ${want}: ${parts.join(", ")}`);
+    }
+    const meters = $$(".usage-view .meter").map((m) => `${text(m.querySelector(".meter-title"))}: ${text(m.querySelector(".meter-figure"))} (${text(m.querySelector(".meter-caption"))})`);
+    if (!meters.some((m) => /^Memory: (\d+%|<1%) used/.test(m)) || !meters.some((m) => /^Processor: (\d+%|<1%) used/.test(m))) {
+      throw new Error(`usage meters: ${meters.join(" | ")}`);
+    }
+    const chatPart = $$(".usage-view .part").find((p) => text(p.querySelector(".part-name")) === "Chat model");
+    if (!/Model \d.*context .*room for [\d,]+ tokens/.test(text(chatPart))) throw new Error(`chat model detail: ${text(chatPart)}`);
+    await log(`12u usage | ${meters.join(" | ")} | ${$$(".usage-view .part .part-line").map(text).join(" | ")}`);
+    // Esc leaves it for the main tab; the steps below go on in Settings.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await waitFor(() => !$(".tab-content.shown .usage-view") && $(".tab-content.shown .ask, .tab-content.shown.fill"), 3000, "Esc to leave Usage");
+    $('[aria-label="Settings"]').click();
+    await waitFor(() => $(".tab-content.shown .settings"), 3000, "Settings to open again");
 
     // Themes: each one recolours the notch; the original is put back afterwards.
     const original = document.documentElement.dataset.theme;

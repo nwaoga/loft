@@ -18,19 +18,22 @@
   import Ask from "./lib/components/Ask.svelte";
   import Folders from "./lib/components/Folders.svelte";
   import Settings from "./lib/components/Settings.svelte";
+  import Usage from "./lib/components/Usage.svelte";
   import Icon from "./lib/components/Icon.svelte";
 
   let runtime = $state<RuntimeStatus | null>(null);
   let folders = $state<FolderInfo[] | null>(null);
 
-  // Settings (the gear) is a view of its own; leaving it returns to the tab before it.
-  let tabBeforeSettings: Tab = "ask";
-  function toggleSettings() {
-    if (ui.tab === "settings") {
-      ui.tab = tabBeforeSettings;
+  // Settings (the gear) and Usage are views of their own, opened from the
+  // header; leaving one returns to the tab that was open before.
+  let tabBefore: Tab = "ask";
+  const isView = (tab: Tab) => tab === "settings" || tab === "usage";
+  function toggleView(view: "settings" | "usage") {
+    if (ui.tab === view) {
+      ui.tab = tabBefore;
     } else {
-      tabBeforeSettings = ui.tab;
-      ui.tab = "settings";
+      if (!isView(ui.tab)) tabBefore = ui.tab;
+      ui.tab = view;
     }
   }
 
@@ -79,7 +82,7 @@
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (ui.tab === "settings") toggleSettings(); // Esc backs out of Settings first
+      if (isView(ui.tab)) ui.tab = tabBefore; // Esc backs out of Settings or Usage first
       else collapse();
     };
     window.addEventListener("keydown", onKey);
@@ -211,8 +214,18 @@
           <span class="spacer"></span>
           <button
             class="icon-btn"
+            class:on={ui.tab === "usage"}
+            onclick={() => toggleView("usage")}
+            aria-label="Usage"
+            aria-pressed={ui.tab === "usage"}
+            title={ui.tab === "usage" ? "Close usage" : "Usage: memory, graphics card and processor"}
+          >
+            <Icon name="activity" size={15} />
+          </button>
+          <button
+            class="icon-btn"
             class:on={ui.tab === "settings"}
-            onclick={toggleSettings}
+            onclick={() => toggleView("settings")}
             aria-label="Settings"
             aria-pressed={ui.tab === "settings"}
             title={ui.tab === "settings" ? "Close settings" : "Settings: theme, models, launch at login"}
@@ -229,6 +242,7 @@
           <div class="tab-content fill" class:shown={ui.tab === "ask"}><Ask {ready} hint={askHint} /></div>
           <div class="tab-content" class:shown={ui.tab === "folders"}><Folders /></div>
           <div class="tab-content" class:shown={ui.tab === "settings"}><Settings /></div>
+          <div class="tab-content" class:shown={ui.tab === "usage"}><Usage /></div>
         </div>
 
         <footer class="statusbar">

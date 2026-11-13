@@ -2,8 +2,8 @@
 
 import { setExpanded } from "./api";
 
-/** "settings" is opened from the gear button, not the tab strip. */
-export type Tab = "ask" | "folders" | "settings";
+/** "settings" and "usage" are opened from header buttons, not the tab strip. */
+export type Tab = "ask" | "folders" | "settings" | "usage";
 
 export const ui = $state({
   expanded: false,
