@@ -92,7 +92,13 @@
           </div>
           {#if f.status === "indexing" && f.progress}
             <div class="progress"><div style="width:{(f.progress.done / Math.max(f.progress.total, 1)) * 100}%"></div></div>
-            {#if f.progress.current}<div class="current">{f.progress.current}</div>{/if}
+            {#if f.progress.current}
+              <div class="current">
+                {f.progress.current}{#if (f.progress.chunksTotal ?? 0) > 100}<span class="chunks">
+                    &nbsp;· {(f.progress.chunksDone ?? 0).toLocaleString()} of {(f.progress.chunksTotal ?? 0).toLocaleString()} chunks</span
+                  >{/if}
+              </div>
+            {/if}
           {/if}
           {#if f.error && f.status !== "error"}<div class="note">{f.error}</div>{/if}
         </div>

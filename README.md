@@ -13,6 +13,19 @@ data, pick small models from a built-in list, and ask questions with cited sourc
 > `sample-docs/` is a small folder for trying it out (its `scans/` hold a picture and a scanned
 > PDF, to try OCR).
 
+## Indexing
+
+Add a folder in **Folders** and Loft reads every file it can (text and code, PDF, Word,
+PowerPoint, spreadsheets, pictures), splits it into chunks, and keeps the index up to date as
+files change. While a folder is indexing it shows the file count and, for a large file, how far
+through that file it is ("orders.xlsx · 1,200 of 2,000 chunks").
+
+Very large files are indexed **in part**: at most 2,000 chunks (about 3 MB of text) per file.
+Data exports such as spreadsheets of orders can hold tens of thousands of rows, which took a
+long time to index and made poor answers. The folder says how many files were cut short. A
+folder indexed before this limit keeps those files whole until it is rebuilt (**Rebuild
+index** in Folders).
+
 ## How answers work
 
 1. The question is embedded and the 6 nearest chunks are fetched from the index.

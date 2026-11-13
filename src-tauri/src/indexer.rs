@@ -22,6 +22,13 @@ use crate::vision::Describer;
 /// Chunks sent to the embedding server per request.
 const EMBED_BATCH: usize = 16;
 
+/// Most chunks indexed from one file (about 3 MB of text). A data export can
+/// hold far more: a 6 MB spreadsheet of orders became 40,000 chunks, one
+/// file took many minutes on a graphics card (far longer on a processor), and
+/// rows of figures make poor answers anyway. Beyond this the first part of the
+/// file is indexed and the folder says so.
+pub const MAX_CHUNKS_PER_FILE: usize = 2000;
+
 /// Directories never worth indexing (dependencies and build output).
 pub const SKIP_DIRS: &[&str] = &[
     "node_modules",
@@ -51,10 +58,15 @@ pub struct EmbedTarget {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub done: u32,
     pub total: u32,
     pub current: String,
+    /// Within the current file: chunks embedded so far, of how many (0 of 0
+    /// while it is being read).
+    pub chunks_done: u32,
+    pub chunks_total: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -63,13 +75,16 @@ pub struct Summary {
     pub unchanged: u32,
     pub removed: u32,
     pub failed: u32,
+    /// Files so large that only their first `MAX_CHUNKS_PER_FILE` chunks were indexed.
+    pub partial: u32,
     pub chunks: u32,
     pub cancelled: bool,
 }
 
 enum Outcome {
     Unchanged,
-    Indexed(u32),
+    /// Chunks stored, and whether the file was cut short (too large).
+    Indexed(u32, bool),
 }
 
 enum FileError {
@@ -77,6 +92,15 @@ enum FileError {
     Skip(String),
     /// The whole job cannot continue (store or embedding server is down).
     Fatal(String),
+    /// The run was stopped in the middle of this file; nothing of it is stored.
+    Cancelled,
+}
+
+/// Keep the first `max` chunks; true if any were left out.
+fn cap_chunks(chunks: &mut Vec<ChunkInput>, max: usize) -> bool {
+    let cut = chunks.len() > max;
+    chunks.truncate(max);
+    cut
 }
 
 enum Prepared {
@@ -178,17 +202,27 @@ fn truncate_chars(text: &str, max: usize) -> &str {
 
 /// Embed a file's chunks in batches. A chunk the server rejects (e.g. too many
 /// tokens) is retried alone, then truncated, then dropped — the rest survive.
+/// `on_chunks(done, total)` follows the batches; a cancel is honoured between them.
 async fn embed_chunks(
     embed: &EmbedTarget,
     file_name: &str,
     chunks: Vec<ChunkInput>,
+    cancel: &AtomicBool,
+    on_chunks: &mut (dyn FnMut(usize, usize) + Send),
 ) -> Result<(Vec<ChunkInput>, Vec<Vec<f32>>), FileError> {
     if chunks.is_empty() {
         return Ok((chunks, Vec::new()));
     }
     let mut kept = Vec::with_capacity(chunks.len());
     let mut vectors = Vec::with_capacity(chunks.len());
-    for batch in chunks.chunks(EMBED_BATCH) {
+    on_chunks(0, chunks.len());
+    for (i, batch) in chunks.chunks(EMBED_BATCH).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(FileError::Cancelled);
+        }
+        if i > 0 {
+            on_chunks(i * EMBED_BATCH, chunks.len());
+        }
         let inputs: Vec<String> = batch
             .iter()
             .map(|c| embed_input(embed, file_name, &c.text))
@@ -215,6 +249,7 @@ async fn embed_chunks(
             }
         }
     }
+    on_chunks(chunks.len(), chunks.len());
     if kept.is_empty() {
         if !crate::runtime::wait_healthy(embed.port, Duration::from_secs(3)).await {
             return Err(FileError::Fatal(
@@ -235,6 +270,8 @@ async fn index_one(
     kind: Kind,
     embed: &EmbedTarget,
     vision: Option<&Describer>,
+    cancel: &AtomicBool,
+    on_chunks: &mut (dyn FnMut(usize, usize) + Send),
 ) -> Result<Outcome, FileError> {
     let meta = std::fs::metadata(path).map_err(|e| FileError::Skip(e.to_string()))?;
     let mtime = meta
@@ -284,14 +321,19 @@ async fn index_one(
                     chunks = chunk_sections(&[parse::Section { text, page: None }], CHUNK_MAX, CHUNK_OVERLAP);
                 }
             }
-            let (chunks, vectors) = embed_chunks(embed, file_name, chunks).await?;
+            let total = chunks.len();
+            let partial = cap_chunks(&mut chunks, MAX_CHUNKS_PER_FILE);
+            if partial {
+                eprintln!("Loft: {path_key} would make {total} chunks; indexing the first {MAX_CHUNKS_PER_FILE}");
+            }
+            let (chunks, vectors) = embed_chunks(embed, file_name, chunks, cancel, on_chunks).await?;
             let record = FileRecord { hash, mtime, size };
             store
                 .lock()
                 .unwrap()
                 .replace_file(folder_id, path_key, &record, kind.as_str(), &chunks, &vectors)
                 .map_err(FileError::Fatal)?;
-            Ok(Outcome::Indexed(chunks.len() as u32))
+            Ok(Outcome::Indexed(chunks.len() as u32, partial))
         }
     }
 }
@@ -339,9 +381,8 @@ pub async fn index_folder_with(
     }
 
     let mut progress = Progress {
-        done: 0,
         total: files.len() as u32,
-        current: String::new(),
+        ..Progress::default()
     };
     on_progress(&progress);
 
@@ -356,21 +397,42 @@ pub async fn index_folder_with(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         progress.current = file_name.clone();
+        progress.chunks_done = 0;
+        progress.chunks_total = 0;
         on_progress(&progress);
 
-        match index_one(&store, folder_id, &path, &path_key, &file_name, kind, &embed, vision).await {
+        // A large file reports its chunks as they are embedded, so it is
+        // seen to move.
+        let outcome = {
+            let mut on_chunks = |done: usize, total: usize| {
+                progress.chunks_done = done as u32;
+                progress.chunks_total = total as u32;
+                on_progress(&progress);
+            };
+            index_one(&store, folder_id, &path, &path_key, &file_name, kind, &embed, vision, &cancel, &mut on_chunks).await
+        };
+        match outcome {
             Ok(Outcome::Unchanged) => summary.unchanged += 1,
-            Ok(Outcome::Indexed(n)) => {
+            Ok(Outcome::Indexed(n, partial)) => {
                 summary.indexed += 1;
                 summary.chunks += n;
+                if partial {
+                    summary.partial += 1;
+                }
             }
             Err(FileError::Skip(reason)) => {
                 summary.failed += 1;
                 eprintln!("Loft: skipped {path_key}: {reason}");
             }
             Err(FileError::Fatal(reason)) => return Err(reason),
+            Err(FileError::Cancelled) => {
+                summary.cancelled = true;
+                break;
+            }
         }
         progress.done += 1;
+        progress.chunks_done = 0;
+        progress.chunks_total = 0;
         on_progress(&progress);
     }
     Ok(summary)
@@ -386,6 +448,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_huge_file_keeps_only_its_first_chunks() {
+        let chunk = |i: usize| ChunkInput { text: format!("row {i}"), page: Some(1) };
+        let mut few: Vec<ChunkInput> = (0..10).map(chunk).collect();
+        assert!(!cap_chunks(&mut few, MAX_CHUNKS_PER_FILE));
+        assert_eq!(few.len(), 10);
+        // A 40,000-row export: the first 2,000 rows, in order.
+        let mut many: Vec<ChunkInput> = (0..40_000).map(chunk).collect();
+        assert!(cap_chunks(&mut many, MAX_CHUNKS_PER_FILE));
+        assert_eq!(many.len(), MAX_CHUNKS_PER_FILE);
+        assert_eq!((many[0].text.as_str(), many[MAX_CHUNKS_PER_FILE - 1].text.as_str()), ("row 0", "row 1999"));
+        // Exactly at the limit is not "cut".
+        let mut exact: Vec<ChunkInput> = (0..MAX_CHUNKS_PER_FILE).map(chunk).collect();
+        assert!(!cap_chunks(&mut exact, MAX_CHUNKS_PER_FILE));
+    }
+
+    /// A file far over the cap, against the real embedding server: only the
+    /// first chunks are stored, the run says so, progress moves within the
+    /// file, and a cancel in the middle of it stops the run at once.
+    ///   cargo test --lib indexer::tests::a_huge_file_is_capped -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires the Nomic model + bundled llama-server"]
+    async fn a_huge_file_is_capped() {
+        use crate::runtime::{wait_healthy, Runtime, ServerKind};
+        let model = PathBuf::from(std::env::var("APPDATA").unwrap_or_default())
+            .join("com.loft.desktop")
+            .join("models")
+            .join("nomic-embed-text-v1.5.f16.gguf");
+        if !model.exists() {
+            eprintln!("skip: model not found at {}", model.display());
+            return;
+        }
+        let mut rt = Runtime::new();
+        let port = rt.spawn(ServerKind::Embed, &model, "nomic-embed-text-v1.5", 8192).expect("spawn embed server");
+        assert!(wait_healthy(port, Duration::from_secs(60)).await);
+        let embed = EmbedTarget { port, doc_prefix: "search_document: ".into() };
+
+        // A spreadsheet export of 100,000 order rows, like the one that made
+        // 40,000 chunks in a real folder.
+        let dir = temp_dir("huge");
+        let rows: Vec<[String; 3]> = (0..100_000)
+            .map(|i| [format!("order {i}"), format!("store {}", i % 97), format!("delivery charge {}.{:02}", i % 7, i % 100)])
+            .collect();
+        let cells: Vec<Vec<&str>> = rows.iter().map(|r| r.iter().map(String::as_str).collect()).collect();
+        let sheet: Vec<&[&str]> = cells.iter().map(Vec::as_slice).collect();
+        std::fs::write(dir.join("orders.xlsx"), fixtures::xlsx("Orders", &sheet)).unwrap();
+        std::fs::write(dir.join("notes.md"), "The pilot starts in February.").unwrap();
+
+        let db = std::env::temp_dir().join(format!("loft-idx-huge-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db);
+        let store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+        let dim = crate::embed::embed_one(port, "probe").await.unwrap().len();
+        store.lock().unwrap().ensure_embedding_space("nomic-embed-text-v1.5", dim).unwrap();
+
+        // First run: cancelled part-way through the big file.
+        let folder = store.lock().unwrap().add_folder(&path_str(&dir)).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stop = cancel.clone();
+        let started = std::time::Instant::now();
+        let summary = index_folder(store.clone(), folder, dir.clone(), embed.clone(), cancel, move |p| {
+            if p.current == "orders.xlsx" && p.chunks_done >= 400 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap();
+        eprintln!("cancelled run: {summary:?} in {:.1}s", started.elapsed().as_secs_f32());
+        assert!(summary.cancelled);
+        assert!(store.lock().unwrap().file_paths(folder).unwrap().iter().all(|p| !p.ends_with("orders.xlsx")), "a cancelled file is not stored");
+
+        // Second run, to the end: capped, reported, and seen to move.
+        let mut seen: Vec<(u32, u32)> = Vec::new();
+        let started = std::time::Instant::now();
+        let summary = index_folder(store.clone(), folder, dir.clone(), embed.clone(), Arc::new(AtomicBool::new(false)), |p| {
+            if p.current == "orders.xlsx" && p.chunks_total > 0 {
+                seen.push((p.chunks_done, p.chunks_total));
+            }
+        })
+        .await
+        .unwrap();
+        eprintln!("full run: {summary:?} in {:.1}s, {} progress ticks within the file", started.elapsed().as_secs_f32(), seen.len());
+        assert_eq!(summary.partial, 1);
+        // (The note was stored by the first run, before the cancel.)
+        assert_eq!((summary.indexed, summary.unchanged), (1, 1));
+        assert_eq!(summary.chunks as usize, MAX_CHUNKS_PER_FILE, "only the capped file was indexed this time");
+        assert!(seen.iter().all(|&(_, total)| total as usize == MAX_CHUNKS_PER_FILE));
+        assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "progress only goes forward");
+        assert_eq!(seen.last().map(|s| s.0 as usize), Some(MAX_CHUNKS_PER_FILE));
+        assert!(seen.len() > 50, "progress was reported batch by batch");
+        // The start of the file is what was kept.
+        let q = crate::embed::embed_one(port, "search_query: order 5 store 5").await.unwrap();
+        let hits = store.lock().unwrap().search(&q, 3).unwrap();
+        assert!(hits.iter().any(|h| h.path.ends_with("orders.xlsx")));
+
+        drop(store);
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

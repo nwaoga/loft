@@ -31,7 +31,14 @@ export interface FolderInfo {
   fileCount: number;
   chunkCount: number;
   /** present while status === "indexing" */
-  progress?: { done: number; total: number; current: string };
+  progress?: {
+    done: number;
+    total: number;
+    current: string;
+    /** Within the current file: chunks embedded so far, of how many (0 of 0 while it is read). */
+    chunksDone?: number;
+    chunksTotal?: number;
+  };
   error?: string;
 }
 
