@@ -8,11 +8,10 @@ data, pick small models from a built-in list, and ask questions with cited sourc
 > Status: **all planned milestones (M0–M6) are implemented.** Built and tested on Windows 11
 > (CPU and Vulkan GPU). On 14 November 2026 it was also built and run on a GitHub-hosted
 > **macOS 15 Apple Silicon** runner (Metal): the app, the `.dmg`, a real answer from
-> `sample-docs`, and window resizing. Linux has **not** been built or run. The Mac run was
-> not a Retina display and did not press the hotkey or open the tray menu.
-> See [Known gaps](#known-gaps).
+> `sample-docs`, and window resizing. Linux x64 has been built as a `.deb` and an AppImage.
+> The Mac run was not a Retina display and did not press the hotkey or open the tray menu.
+> How to build each target is in [Building](#building). See [Known gaps](#known-gaps).
 >
-> On Windows, build and run through `scripts\win-dev.bat` (it selects the complete MSVC toolset).
 > `sample-docs/` is a small folder for trying it out (its `scans/` hold a picture and a scanned
 > PDF, to try OCR).
 
@@ -191,49 +190,175 @@ are pooling-based and don't reliably share a process with chat).
 [ARCHITECTURE.md](ARCHITECTURE.md) has the full picture: the code map, the data, the main flows
 and the reasons behind the design.
 
-## Prerequisites
+## Building
 
-| Tool | Notes |
-|---|---|
-| Node.js 18+ | frontend + Tauri CLI |
-| Rust (rustup, stable) | Tauri backend |
-| Windows: MSVC C++ build tools + Windows 10/11 SDK | Rust needs these to link |
-| Windows: WebView2 runtime | the webview Tauri renders into (preinstalled on Windows 11) |
-| llama.cpp server builds | fetched by `npm run fetch-llama` into `src-tauri/binaries/` (not committed); CUDA and OpenVINO are optional extras |
-| Linux: `libayatana-appindicator3` | for the tray icon |
+Every target needs **Node.js 18+** and a current **Rust stable** from rustup. The lockfile
+uses Rust edition 2024, so 1.85 or newer: an older `rustc` (1.83 was tried) stops while
+resolving crates. Loft has **one version number**, in `package.json`. The app, the installer, and
+**Settings** all show it. `npm run version:set` keeps `src-tauri/Cargo.toml` in step
+(`0.2.0`, or `patch` / `minor` / `major`; numbers only, which is what the Windows MSI
+format allows).
 
-### Installing the Windows build toolchain (one time)
+One-time, in this repo, on every target:
+
+```bash
+npm install
+npm run fetch-llama
+```
+
+`fetch-llama` downloads the llama.cpp server builds for **this** OS into
+`src-tauri/binaries/` (not committed). CUDA and OpenVINO are optional extras
+(`npm run fetch-llama cuda` or `openvino`); they are not in the installers below.
+Models are not bundled either. They are downloaded in the app.
+
+A debug run (`tauri dev`) builds `src-tauri/target/debug/` and opens Loft. A release
+build (`tauri build`) writes `src-tauri/target/release/` and the installers under
+`src-tauri/target/release/bundle/`. These builds are **unsigned**. The first time you
+open one on macOS or Windows, see [First open](#first-open--gatekeeper--smartscreen).
+
+### Windows x64
+
+This is the path the Windows laptops and `scripts\windows\release.bat` were written for.
+Pinned engines also exist for Windows on ARM (`win-arm64` in `engines.json`); that
+installer has not been built or run.
+
+**Prerequisites.** The MSVC C++ build tools and the Windows 10/11 SDK (Rust links with
+them), and the WebView2 runtime (already on Windows 11).
+
+**One time:**
 
 ```powershell
-# 1) Rust (MSVC toolchain)
 winget install --id Rustlang.Rustup -e
-
-# 2) MSVC C++ build tools + Windows SDK (adds "Desktop development with C++")
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-Then open a **new** terminal so the updated PATH is picked up, and run `rustc --version` to confirm.
+Open a new terminal so `PATH` is updated, then `rustc --version`, `npm install`, and
+`npm run fetch-llama` (CPU and Vulkan).
+
+**Debug run.** `scripts\win-dev.bat` selects the MSVC toolset and runs `npm run tauri dev`.
+The debug binary is `src-tauri\target\debug\loft.exe`.
+
+**Release.** `scripts\win-build.bat` is the optimised build and its installer, left under
+`src-tauri\target\release\bundle\`. `scripts\windows\release.bat` also sets the version,
+runs the type check and the unit tests, and copies a versioned set to
+`releases\windows\<version>\`:
+
+```bat
+scripts\windows\release.bat 0.2.0
+scripts\windows\release.bat patch
+scripts\windows\release.bat
+```
+
+| File | What it is |
+|---|---|
+| `Loft_<version>_x64-setup.exe` | Per-user installer (no administrator) into `%LOCALAPPDATA%\Loft`, Start menu, and Installed apps. A newer installer replaces the older one. Settings, models, folders, and chats stay in `%APPDATA%\com.loft.desktop`. |
+| `SHA256SUMS.txt` | The installer's checksum. |
+| `RELEASE.txt` | Version, build date, llama.cpp release, which engines are inside. |
+
+`-Msi` also writes an `.msi`. `-SkipTests` skips the checks. `-Force` remakes a version
+that was already released; otherwise the script refuses, so a version number means one
+build. The version stays changed if a later step fails: run it again once fixed. CPU and
+Vulkan from `src-tauri/binaries/` are inside the installer.
+
+**Signing.** Unsigned. SmartScreen shows "Windows protected your PC". See
+[First open](#first-open--gatekeeper--smartscreen).
+
+### macOS
+
+**Apple Silicon is the verified target.** The `macos-15` CI job (arm64) fetches the Metal
+engine, and `npm run tauri build` produces an ad-hoc-signed `Loft.app` and
+`Loft_<version>_aarch64.dmg`. There is no Metal build for Intel. **Intel Macs** have a
+pinned CPU engine (`mac-x64` in `engines.json`) and have not been built or run.
+
+**Prerequisites.** Xcode command-line tools, Node.js, and Rust.
+
+**One time:** `npm install`, then `npm run fetch-llama` (Metal on Apple Silicon, CPU on Intel).
+
+**Debug run:**
+
+```bash
+npm run tauri dev
+```
+
+**Release:**
+
+```bash
+npm run tauri build
+```
+
+The app is `src-tauri/target/release/bundle/macos/Loft.app`. The disk image is
+`src-tauri/target/release/bundle/dmg/Loft_<version>_aarch64.dmg` on Apple Silicon.
+There is no `scripts/macos/` release script yet; CI stops at that bundle. The bundled
+`llama-server` on the runner was the Metal build, still reporting llama.cpp `b12110`.
+
+**Signing.** Ad-hoc, not an Apple Developer ID. Gatekeeper may say the app is from an
+unidentified developer, or that it is damaged. See
+[First open](#first-open--gatekeeper--smartscreen).
+
+### Linux
+
+**x64 is the verified target.** On Ubuntu 24.04, `npm run tauri -- build --bundles deb,appimage`
+produced `Loft_0.1.1_amd64.deb` (73.32 MiB) and `Loft_0.1.1_amd64.AppImage` (105.35 MiB).
+The binary taken out of the deb opened. It was not installed with `dpkg`. **arm64** has
+pinned CPU and Vulkan engines (`linux-arm64` in `engines.json`) and has not been built or run.
+
+**Prerequisites** (Ubuntu 24.04 package names; this is the set that compiled and bundled):
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf libssl-dev build-essential curl wget file \
+  libxdo-dev pkg-config libfuse2t64
+```
+
+WebKitGTK 4.1 is the window. `libayatana-appindicator3` is the tray icon (without it the
+tray option is disabled). `libfuse2t64` is what an AppImage needs to run; on Ubuntu 22.04
+that package is `libfuse2`. The Tauri CLI downloads its own `linuxdeploy` when it builds
+the AppImage.
+
+**One time:** `npm install`, then `npm run fetch-llama` (CPU and Vulkan on x64). Vulkan
+lists a device only when a GPU driver provides one. A machine whose only Vulkan device is
+the software renderer llvmpipe will run on the CPU engine; that is what the x64 run did.
+
+**Debug run:**
+
+```bash
+npm run tauri dev
+```
+
+The debug binary is `src-tauri/target/debug/loft`. GTK does not resize the notch unless a
+window manager is running, so a bare Xvfb session is not enough for a normal desktop.
+
+**Release:**
+
+```bash
+npm run tauri -- build --bundles deb,appimage
+```
+
+| File | Where |
+|---|---|
+| `Loft_<version>_amd64.deb` | `src-tauri/target/release/bundle/deb/` |
+| `Loft_<version>_amd64.AppImage` | `src-tauri/target/release/bundle/appimage/` |
+
+The release binary before bundling is `src-tauri/target/release/loft`. CPU and Vulkan from
+`src-tauri/binaries/` are inside the package. There is no `scripts/linux/` release script
+and no `releases/linux/` folder yet.
+
+**Signing.** Unsigned. There is no Gatekeeper or SmartScreen step. The macOS and Windows
+warnings, and what to do about them, are in
+[First open](#first-open--gatekeeper--smartscreen).
 
 ## Run
 
-### Notch UI only (no Rust needed)
+Start a desktop build from [Building](#building). To look at the notch UI in a browser,
+with mock data and no Rust:
 
 ```bash
 npm install
-npm run dev      # http://localhost:1420  (mock data, full UI)
+npm run dev      # http://localhost:1420
 ```
 
-### Full desktop app
-
-```bash
-npm install
-npm run fetch-llama        # once: downloads the llama.cpp server builds for this OS
-npm run tauri dev          # macOS / Linux
-scripts\win-dev.bat        # Windows (selects the complete MSVC toolset first)
-```
-
-Then: **Settings** (the gear) → download and select a chat model and an embedding model →
-**Folders** tab → add a folder → **Ask**. Ctrl/Cmd+Shift+Space summons the notch.
+In the app: **Settings** (the gear) → download and select a chat model and an embedding
+model → **Folders** tab → add a folder → **Ask**. Ctrl/Cmd+Shift+Space summons the notch.
 
 Settings also holds:
 
@@ -254,54 +379,6 @@ Settings also holds:
   battery, trying another engine (or the NPU) on the spot, and a performance test. See
   [Engines, performance and battery](#engines-performance-and-battery).
 - **Launch at login** and **Quit** (Quit is on the tray icon too).
-
-### Releases and installers
-
-Loft has **one version number**, in `package.json`. `src-tauri/tauri.conf.json` reads it from
-there (`"version": "../package.json"`), so the app, the installer and **Settings** (at the
-bottom, under Quit) all show the same one. `scripts/set-version.mjs` changes it, and keeps
-the Rust crate's copy in `src-tauri/Cargo.toml` in step:
-
-```bash
-npm run version:set              # print the current version
-npm run version:set 0.2.0        # set it (MAJOR.MINOR.PATCH, numbers only: the MSI format allows nothing else)
-npm run version:set patch        # 0.1.0 -> 0.1.1 (also: minor, major)
-```
-
-**A release** is made by the release script for the platform. Each platform has its own
-folder under `scripts/` (`scripts/windows/` now; `scripts/macos/` is planned) and its
-releases go to its own folder under `releases/` (not checked in).
-
-**Windows:**
-
-```bat
-scripts\windows\release.bat 0.2.0      :: release version 0.2.0
-scripts\windows\release.bat patch      :: next patch version (also: minor, major)
-scripts\windows\release.bat            :: the current version again
-```
-
-It sets the version, runs the type check and the unit tests, builds the optimised app and
-its installer, and puts them in `releases\windows\<version>\`:
-
-| File | What it is |
-|---|---|
-| `Loft_<version>_x64-setup.exe` | The installer. Installs for the current user (no administrator rights) into `%LOCALAPPDATA%\Loft`, adds Loft to the Start menu and to Installed apps (for uninstalling). Running a newer one replaces the older version; settings, models, folders and chats are kept (they live in `%APPDATA%\com.loft.desktop`). |
-| `SHA256SUMS.txt` | The installer's checksum, to check a copy is intact. |
-| `RELEASE.txt` | Version, build date, llama.cpp release, which engines are inside, how to install. |
-
-Options: `-Msi` also makes an `.msi` (for deployment tools such as Intune), `-SkipTests`
-skips the checks, `-Force` remakes a version that was already released (otherwise the script
-refuses, so a version number always means one build). It needs the Windows prerequisites
-above and the llama.cpp builds (`npm run fetch-llama`); it stops and says so if either is
-missing. The version stays changed even if a later step fails: run it again once fixed.
-
-The llama.cpp builds in `src-tauri/binaries/` (CPU and Vulkan) are bundled into the installer;
-models are not (they are downloaded in the app, and verified against the SHA-256 pinned in
-`catalog.json`). CUDA and OpenVINO are added from Settings, so they are not in `binaries/`.
-
-On macOS and Linux, `npm run tauri build` still makes the installers (`.dmg`, `.app`,
-`.deb`, `.AppImage`) in `src-tauri/target/release/bundle/`, until those platforms have
-release scripts of their own.
 
 ### First open / Gatekeeper & SmartScreen
 
@@ -580,8 +657,9 @@ to check the rest on other hardware and operating systems.
   Cmd+Shift+Space, opening the tray menu, dragging the floating window, a real Retina
   display, battery or power switching (still unimplemented and always treated as mains),
   OCR, and the full `smoke-ui.js` / `smoke-restart.js` scripts.
-- **Linux is untested.** The code paths, `fetch-llama` entries and bundle config exist,
-  but nothing has been built or run there.
+- **Linux x64 has been built and run** (debug app, `.deb`, and AppImage). Commands and
+  where the files land are in [Building](#building). Still open: Wayland, a machine with a
+  GPU, arm64, and installing those packages with a package manager.
 - **Not exercised by any test:** the native Add-folder dialog, the remove-folder button,
   clicking a source to open it, the tray icon and the global hotkey (they need a real click or
   key press), turning on Launch at login (only allowed in an installed build), and installing
@@ -597,10 +675,11 @@ to check the rest on other hardware and operating systems.
   floor for both, EmbeddingGemma found nothing: it scores a relevant excerpt around 0.25 to
   0.35.) **BGE-M3 has not been measured** and takes the default of 0.45, which may be wrong
   for it. Other folders may sit differently from the sample one.
-- **Dragging the floating window, clicking the tray icon, and pressing the hotkey need a real hand.**
-  The tests resize and move the window themselves. On the macOS runner the tray icon was
-  created and shows in the menu bar, and the hotkey registered without an error, but nothing
-  clicked that icon or pressed Cmd+Shift+Space. The same is untested on Linux.
+- **Dragging the floating window and clicking the tray icon need a real hand.**
+  The tests resize and move the window themselves. On the macOS runner the tray icon shows
+  in the menu bar; the hotkey registered, and nobody pressed it or opened the menu there.
+  On Linux the indicator was drawn, and Ctrl+Shift+Space sent with `xdotool` opened the
+  panel. Nobody has clicked the icon or dragged the window.
 - **Power changes were simulated.** Windows' power notification is registered and the
   switching logic is tested end to end with simulated readings, but the charger was not
   actually pulled, and no energy figure has been measured (that needs a run on battery).
