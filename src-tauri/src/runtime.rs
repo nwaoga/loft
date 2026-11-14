@@ -827,7 +827,23 @@ mod tests {
         }
         for backend in &installed {
             let info = inventory.backend(*backend).unwrap_or_else(|| panic!("{} is listed", backend.label()));
-            assert_eq!(info.status, BackendStatus::Available, "{}", backend.label());
+            match info.status {
+                BackendStatus::Available => {}
+                // `fetch-llama` installs the GPU builds on Linux even when the
+                // machine has no GPU. "No device" and "no driver" are answers.
+                // A build that cannot be asked (Failed) is still a failure,
+                // and the CPU and Metal builds have to be usable when present.
+                BackendStatus::HardwareUnavailable | BackendStatus::DriverMissing
+                    if !matches!(*backend, Backend::Cpu | Backend::Metal) =>
+                {
+                    eprintln!(
+                        "note: {} is installed but this machine cannot run it ({})",
+                        backend.label(),
+                        info.detail.as_deref().unwrap_or("")
+                    );
+                }
+                other => panic!("{} is {other:?}: {}", backend.label(), info.detail.as_deref().unwrap_or("")),
+            }
         }
         // Whatever is available can be resolved, and something is the default.
         let default = rt.default_target().expect("a default target");
