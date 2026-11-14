@@ -21,7 +21,9 @@
         const v = await fn();
         if (v) return v;
       } catch (e) {
-        last = e && e.message ? e.message : String(e);
+        const msg = e && e.message ? e.message : String(e);
+        if (msg.startsWith("a model failed")) throw e;
+        last = msg;
       }
       await sleep(400);
     }
@@ -34,7 +36,18 @@
 
     const status = await waitFor(async () => {
       const s = await invoke("get_runtime_status");
-      if (s.chat === "error" || s.embed === "error") fail(`a model failed to start: ${s.message || s.chat + "/" + s.embed}`);
+      if (s.chat === "error" || s.embed === "error") {
+        const inf = await invoke("get_inference");
+        const chatLog = await invoke("get_engine_log", { engine: "chat" });
+        const embedLog = await invoke("get_engine_log", { engine: "embed" });
+        const why = [inf.status && inf.status.chat && inf.status.chat.error, inf.status && inf.status.embed && inf.status.embed.error]
+          .filter(Boolean)
+          .join(" | ");
+        await log(`promo model error | ${why || s.message || ""}`);
+        await log(`promo chat log | ${(chatLog || []).slice(-6).join(" || ")}`);
+        await log(`promo embed log | ${(embedLog || []).slice(-6).join(" || ")}`);
+        fail(`a model failed to start: ${why || s.chat + "/" + s.embed}`);
+      }
       return s.chat === "ready" && s.embed === "ready" ? s : null;
     }, 240000, "the chat and embedding models");
     await log(`promo models ready | ${status.accelerator} | ${status.message || ""}`);

@@ -818,12 +818,17 @@ mod tests {
             }
         }
         assert_eq!(inventory.revision, LLAMA_REVISION);
-        if find_binary(&rt.roots, Backend::Cpu).is_none() {
+        // The standard engine is CPU on Windows and Linux, Metal on Apple
+        // silicon. Skip only when nothing at all has been fetched.
+        let installed: Vec<Backend> = supported_backends().iter().copied().filter(|b| find_binary(&rt.roots, *b).is_some()).collect();
+        if installed.is_empty() {
             eprintln!("skip: no llama.cpp builds here (run `npm run fetch-llama`)");
             return;
         }
-        let cpu = inventory.backend(Backend::Cpu).expect("the CPU backend is listed");
-        assert_eq!(cpu.status, BackendStatus::Available);
+        for backend in &installed {
+            let info = inventory.backend(*backend).unwrap_or_else(|| panic!("{} is listed", backend.label()));
+            assert_eq!(info.status, BackendStatus::Available, "{}", backend.label());
+        }
         // Whatever is available can be resolved, and something is the default.
         let default = rt.default_target().expect("a default target");
         eprintln!("default target: {}", default.label());

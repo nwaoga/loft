@@ -623,6 +623,7 @@ async fn reconcile_engine(app: &AppHandle, engine: Engine, inventory: &Inventory
             inf.records.entry(engine).or_default().plan = Some(plan);
         }
         Decision::Stop(reason) => {
+            eprintln!("Loft: the {} model will not start: {reason}", kind.as_str());
             {
                 let mut rt = state.runtime.lock().unwrap();
                 rt.stop(kind);
