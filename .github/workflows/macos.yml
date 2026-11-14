@@ -187,6 +187,7 @@ jobs:
 
       - name: Screenshots
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: macos-screenshots
@@ -195,6 +196,19 @@ jobs:
             /tmp/loft-window-*.png
             /tmp/loft-release.png
           if-no-files-found: ignore
+
+      # The account's Actions artifact quota can reject the upload. The
+      # pictures are small; keep a copy in the log so they are not lost.
+      - name: Screenshot bytes
+        if: always()
+        run: |
+          set +e
+          shopt -s nullglob
+          for f in /tmp/loft-macos-*.png /tmp/loft-window-*.png /tmp/loft-release.png; do
+            echo "LOFT_PNG_BEGIN $(basename "$f")"
+            base64 -i "$f"
+            echo "LOFT_PNG_END $(basename "$f")"
+          done
 
       - name: What the runner saw
         if: always()
