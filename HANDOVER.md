@@ -45,7 +45,7 @@ Smaller changes that came out of testing, worth knowing about:
 - Added 13 November 2026: small talk ("hi", "thanks", "who are you?") gets a short friendly
   reply instead of the refusal, and the refusal now ends with the user's folder names: "I
   couldn't find that in your indexed files. I'm only really here to talk about items in
-  sample-docs." See "How answers work" in the README. Checked with Qwen 2.5 3B only; whether
+  sample-docs." See "How answers work" in [docs/how-it-works.md](docs/how-it-works.md). Checked with Qwen 2.5 3B only; whether
   other chat models repeat the longer refusal word for word is not known.
 
 ## 2. What was verified, and where
@@ -69,7 +69,7 @@ The development machine: Windows 11, Intel Core i7-12700H, Intel Iris Xe graphic
 Two last-minute changes were only compile- or syntax-checked, not run: the non-Windows branch
 of `dev_engines` (`pgrep`), and the UI test skipping its two OCR steps off Windows.
 
-What the real optional engines did there (details in the README):
+What the real optional engines did there (details in [docs/engines.md](docs/engines.md)):
 
 - **CUDA** works; on the same NVIDIA card it measures the same as Vulkan (64 to 73 tokens/s
   each, trading places between runs) and loads the model about twice as fast.
@@ -214,7 +214,7 @@ Known differences, by design or by omission:
 
 ## 4. Setting up on another machine
 
-Prerequisites are in the README. In short:
+Prerequisites are in [docs/building.md](docs/building.md). In short:
 
 ```bash
 npm install
@@ -231,8 +231,8 @@ may phrase things differently and fail a check that is about wording, not behavi
 `src-tauri/binaries/`, `src-tauri/gen/`, `node_modules/`, `dist/` and `releases/` are not in
 the repository. The icons now are (`src-tauri/icons/`, made from `app-icon.svg`).
 
-To make an installer: `scripts\windows\release.bat` (see "Releases and installers" in the
-README). Worth checking on another Windows machine: that the installer from
+To make an installer: `scripts\windows\release.bat` (see [docs/building.md](docs/building.md)).
+Worth checking on another Windows machine: that the installer from
 `releases\windows\<version>\` installs, starts, shows its version at the bottom of Settings,
 and that a newer one installs over it keeping models and folders.
 

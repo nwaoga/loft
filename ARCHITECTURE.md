@@ -2,7 +2,8 @@
 
 Loft answers questions about the files in folders you choose, entirely on your own computer.
 This document describes how it is put together: the processes, the code, the data, and the
-reasons behind the main decisions. For setup and usage see [README.md](README.md).
+reasons behind the main decisions. For setup and usage see [README.md](README.md)
+and [docs/building.md](docs/building.md).
 
 ## The shape of it
 
