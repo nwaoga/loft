@@ -255,18 +255,18 @@ jobs:
   # An unsupported runner label (macos-14 after its retirement) cancels the
   # Apple Silicon job before any step runs. GitHub then reports that job as
   # cancelled, which is not a failure, so the commit can look green. This
-  # job runs on Linux either way and fails unless the Mac job succeeded.
+  # job runs only in that case and fails the workflow. After a real success
+  # it stays skipped: a second runner that never starts was turning green
+  # builds red.
   require-success:
     name: macOS job must succeed
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && needs.arm64.result != 'success'
     needs: arm64
     steps:
       - name: Fail unless the Apple Silicon job succeeded
         run: |
           result="${{ needs.arm64.result }}"
           echo "macOS job result: $result"
-          if [ "$result" != "success" ]; then
-            echo "A cancelled, skipped, or failed macOS job is not a pass."
-            exit 1
-          fi
+          echo "A cancelled, skipped, or failed macOS job is not a pass."
+          exit 1
