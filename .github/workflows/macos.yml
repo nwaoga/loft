@@ -1,0 +1,166 @@
+# Build Loft on Apple Silicon and run the checks that do not need a
+# downloaded chat model. The GitHub-hosted macos-14 runner is arm64 and
+# has a window server, so a debug build can open its window and run a
+# script in the webview. It cannot grant Accessibility, click the tray,
+# or drag with a mouse, and it has no model files.
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64:
+    name: build (macos-14 arm64)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Machine
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          node -v
+          rustc -vV
+          system_profiler SPDisplaysDataType | sed -n '1,40p' || true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Fetch the Metal engine
+        run: |
+          set -euo pipefail
+          npm run fetch-llama
+          bin=src-tauri/binaries/mac-arm64-metal/llama-server
+          test -x "$bin"
+          file "$bin"
+          echo "----- linked libraries -----"
+          otool -L "$bin"
+          echo "----- files -----"
+          ls -lh src-tauri/binaries/mac-arm64-metal
+          echo "----- version -----"
+          "$bin" --version
+          echo "----- list-devices -----"
+          "$bin" --list-devices || true
+
+      - name: Engine discovery sees Metal
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          cargo test --lib runtime::tests::engines_on_this_computer_are_discovered -- --nocapture --exact 2>&1 | tee /tmp/loft-discover.txt
+          grep -E 'Metal[[:space:]]+Available' /tmp/loft-discover.txt
+
+      - name: Window, tray, and smoke-engines
+        run: |
+          set -euo pipefail
+          chmod +x .github/macos-run.sh
+          # smoke.sh copies the model choice out of the real app-data folder.
+          # There are no models on the runner; an empty choice lets the app
+          # start. smoke-engines.js then skips (it wants two GPU targets).
+          appdata="$HOME/Library/Application Support/com.loft.desktop"
+          mkdir -p "$appdata"
+          printf '%s\n' '{"chat":null,"embed":null}' > "$appdata/selection.json"
+
+          echo "===== window probe ====="
+          LOFT_SMOKE_SCRIPT=macos-window-probe.js .github/macos-run.sh WINDOW-OK 1500 window
+          cp -f /tmp/loft-dev-run.log /tmp/loft-window.log
+
+          echo "===== smoke-engines (expects E-SKIP on a single GPU) ====="
+          LOFT_SMOKE_SCRIPT=smoke-engines.js .github/macos-run.sh E-SKIP 900 engines
+          cp -f /tmp/loft-dev-run.log /tmp/loft-engines.log
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          df -h /
+          npm run tauri -- build
+          app=$(find src-tauri/target/release/bundle/macos -name 'Loft.app' -maxdepth 2 | head -1)
+          test -n "$app"
+          test -d "$app"
+          bundled="$app/Contents/Resources/binaries/mac-arm64-metal/llama-server"
+          test -x "$bundled"
+          echo "app: $app"
+          codesign -dv --verbose=2 "$app" 2>&1 || true
+          "$bundled" --version
+          echo "$app" > /tmp/loft-app-path.txt
+
+      - name: Launch the built app
+        run: |
+          set -euo pipefail
+          app=$(cat /tmp/loft-app-path.txt)
+          open "$app"
+          # Give the window time to appear. The release build has no dev
+          # script, so this only checks that the process stays up.
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if pgrep -lf '[L]oft' >/dev/null || pgrep -lf '/MacOS/loft' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          pgrep -lf loft
+          sleep 3
+          screencapture -x /tmp/loft-release.png || true
+          osascript -e 'tell application "Loft" to quit' || true
+          sleep 2
+          pkill -f 'Loft.app/Contents/MacOS' || true
+
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-screenshots
+          path: /tmp/loft-*.png
+          if-no-files-found: ignore
+
+      - name: What the runner saw
+        if: always()
+        run: |
+          {
+            echo "## macOS arm64"
+            echo
+            echo '```'
+            sw_vers
+            uname -m
+            echo '```'
+            echo
+            if [ -f /tmp/loft-discover.txt ]; then
+              echo "### Engine discovery"
+              echo '```'
+              grep -E 'cpu:|hardware:|Metal|CPU|default target:|skip:' /tmp/loft-discover.txt || true
+              echo '```'
+            fi
+            for f in /tmp/loft-window.log /tmp/loft-engines.log; do
+              [ -f "$f" ] || continue
+              echo
+              echo "### $(basename "$f")"
+              echo '```'
+              grep -a '\[dev\]' "$f" || true
+              grep -a -E 'could not (create the tray icon|register global shortcut)' "$f" || echo "(no tray or shortcut error logged)"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
