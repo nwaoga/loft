@@ -265,19 +265,18 @@ jobs:
 
   # An unsupported runner label cancels the Ubuntu job before any step
   # runs. GitHub then reports that job as cancelled, which is not a
-  # failure, so the commit can look green. This job runs either way and
-  # fails unless the Ubuntu job succeeded.
+  # failure, so the commit can look green. This job runs only in that
+  # case and fails the workflow. After a real success it stays skipped:
+  # a second runner that never starts was turning green builds red.
   require-success:
     name: Linux job must succeed
     runs-on: ubuntu-24.04
-    if: always()
+    if: always() && needs.x64.result != 'success'
     needs: x64
     steps:
       - name: Fail unless the Ubuntu job succeeded
         run: |
           result="${{ needs.x64.result }}"
           echo "Linux job result: $result"
-          if [ "$result" != "success" ]; then
-            echo "A cancelled, skipped, or failed Linux job is not a pass."
-            exit 1
-          fi
+          echo "A cancelled, skipped, or failed Linux job is not a pass."
+          exit 1
