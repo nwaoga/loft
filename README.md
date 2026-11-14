@@ -654,3 +654,7 @@ releases/                 # made by the release scripts, one folder per platform
   questions within a conversation.
 - **M6** Polish & packaging: tray + quit, window sizing, GPU builds with CPU fallback, crash
   restart, launch at login, checksums, Windows installers.
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 EAN Digital.
