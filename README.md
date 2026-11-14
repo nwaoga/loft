@@ -139,8 +139,8 @@ The planned milestones (M0–M6) are implemented. What was actually run is narro
 | Platform | Where it stands |
 |---|---|
 | Windows | **Tested** on Windows 11, on the CPU and on a Vulkan GPU. |
-| macOS | **Initially validated.** Built and run once on a GitHub-hosted macOS 15 Apple Silicon runner (14 November 2026): Metal, an answer from `sample-docs`, window resizing, a tray icon in the menu bar, and an ad-hoc-signed `.app` and `.dmg`. The hotkey registered and was not pressed. The tray menu was not opened. Not a Retina display. |
-| Linux | **Being validated.** x64 has been built and run (the debug app, a `.deb`, and an AppImage). Still open: Wayland, a machine with a GPU, arm64, and installing those packages with a package manager. |
+| macOS | **Initially validated.** Built and run once on a GitHub-hosted macOS 15 Apple Silicon runner (14 November 2026): Metal, an answer from `sample-docs`, window resizing, a tray icon in the menu bar, and an ad-hoc-signed `.app` and `.dmg`. The runner did not press the hotkey or open the tray menu, and it is not Retina. The owner has pressed Cmd+Shift+Space on a real Retina Mac and it summoned Loft. |
+| Linux | **Built once under Xvfb** at 1920×1080 (x64): the debug app, a `.deb`, and an AppImage, an answer on the CPU, and Ctrl+Shift+Space via `xdotool`. The record is in [HANDOVER.md](HANDOVER.md). Still open: Wayland, a machine with a GPU, arm64, and installing those packages with a package manager. |
 
 The rest of the holes — unsigned installers, OCR only on Windows, the NPU on one machine, power changes that were simulated — are in [Known gaps](docs/known-gaps.md).
 
