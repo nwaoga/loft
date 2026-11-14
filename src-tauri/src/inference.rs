@@ -1017,9 +1017,11 @@ impl LoadReport {
 }
 
 /// A buffer in system memory: `CPU`, `CPU_Mapped`, `CUDA_Host`, `Vulkan_Host`.
+/// `AMX` is the CPU build's name for weights it keeps in ordinary memory and
+/// multiplies with Intel AMX; it is not a separate device.
 fn is_host_buffer(id: &str) -> bool {
     let id = id.to_ascii_uppercase();
-    id.starts_with("CPU") || id.ends_with("_HOST")
+    id.starts_with("CPU") || id.ends_with("_HOST") || id == "AMX"
 }
 
 /// Whether the model really is where it was asked to be.
@@ -1659,6 +1661,10 @@ mod tests {
         // only the buffer lines count.
         let none = report(NO_OFFLOAD_LOG);
         assert!(verify(&cpu, &none).ok);
+        // Intel AMX is the CPU build using the processor's matrix unit.
+        let amx = report("0.40.000 I load_tensors:         AMX model buffer size =  1869.00 MiB\n");
+        let on_amx = verify(&cpu, &amx);
+        assert!(on_amx.ok, "{}", on_amx.detail);
         let wrong = verify(&nvidia, &none);
         assert!(!wrong.ok);
         assert_eq!(wrong.detail, "The model was loaded into system memory, not onto NVIDIA GeForce RTX 4050 Laptop GPU.");
