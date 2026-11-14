@@ -1,0 +1,283 @@
+# Build Loft on Ubuntu and run the checks a virtual display can do.
+#
+# ubuntu-24.04, x64. There is no physical screen, so Xvfb provides a
+# 1920x1080 one, with a window manager (GTK will not resize without one),
+# a compositor, and a panel that hosts the Ayatana app indicator.
+# GDK_SCALE=2 was tried: GTK sized the window at 2x, but WebKit kept
+# devicePixelRatio at 1 and the notch no longer filled its window.
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  x64:
+    name: build (ubuntu-24.04 x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libssl-dev libfuse2t64 file libxdo-dev \
+            xvfb xfwm4 xfce4-panel xfce4-sntray-plugin picom feh \
+            imagemagick dbus-x11 xdotool x11-utils x11-apps \
+            mesa-vulkan-drivers vulkan-tools \
+            fonts-inter fonts-liberation
+
+      - name: Machine
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "$PRETTY_NAME"
+          uname -m
+          node -v
+          rustc -vV
+          nproc
+          free -h
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Fetch the CPU and Vulkan engines
+        run: |
+          set -euo pipefail
+          npm run fetch-llama
+          cpu=src-tauri/binaries/linux-x64-cpu/llama-server
+          vk=src-tauri/binaries/linux-x64-vulkan/llama-server
+          test -x "$cpu"
+          test -x "$vk"
+          echo "----- cpu -----"
+          file "$cpu"
+          ldd "$cpu" | awk '/not found/ { print; missing=1 } END { exit missing }'
+          "$cpu" --version
+          echo "----- cpu devices -----"
+          "$cpu" --list-devices || true
+          echo "----- vulkan -----"
+          file "$vk"
+          ldd "$vk" | awk '/not found/ { print; missing=1 } END { exit missing }'
+          "$vk" --version
+          echo "----- vulkan devices (as Loft asks) -----"
+          "$vk" --list-devices || true
+          echo "----- vulkan devices (software device included) -----"
+          # llama.cpp hides llvmpipe unless a device is named. This only
+          # records what the build can see; Loft does not set the variable.
+          GGML_VK_VISIBLE_DEVICES=0 "$vk" --list-devices || true
+
+      - name: Engine discovery sees the CPU
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          cargo test --lib runtime::tests::engines_on_this_computer_are_discovered -- --nocapture --exact 2>&1 | tee /tmp/loft-discover.txt
+          grep -E 'CPU[[:space:]]+Available' /tmp/loft-discover.txt
+
+      - name: Download the sample models
+        run: |
+          set -euo pipefail
+          models="${XDG_DATA_HOME:-$HOME/.local/share}/com.loft.desktop/models"
+          mkdir -p "$models"
+          fetch() {
+            url=$1
+            file=$2
+            sha=$3
+            dest="$models/$file"
+            if [ -f "$dest" ] && [ "$(sha256sum "$dest" | awk '{print $1}')" = "$sha" ]; then
+              echo "already have $file"
+              return
+            fi
+            echo "downloading $file"
+            curl -fL --retry 5 --retry-all-errors -o "$dest.partial" "$url"
+            echo "$sha  $dest.partial" | sha256sum -c -
+            mv "$dest.partial" "$dest"
+          }
+          fetch \
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf" \
+            "qwen2.5-3b-instruct-q4_k_m.gguf" \
+            "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+          fetch \
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf" \
+            "nomic-embed-text-v1.5.f16.gguf" \
+            "f7af6f66802f4df86eda10fe9bbcfc75c39562bed48ef6ace719a251cf1c2fdb"
+          printf '%s\n' '{"chat":"qwen2.5-3b-instruct-q4","embed":"nomic-embed-text-v1.5"}' \
+            > "${XDG_DATA_HOME:-$HOME/.local/share}/com.loft.desktop/selection.json"
+
+      - name: Promo screenshots
+        run: |
+          set -euo pipefail
+          chmod +x .github/linux-display.sh .github/linux-run.sh scripts/smoke.sh
+          eval "$(.github/linux-display.sh)"
+          xdpyinfo | awk '/dimensions/'
+          LOFT_SMOKE_SCRIPT=linux-promo.js .github/linux-run.sh PROMO-OK 2400 promo
+          cp -f /tmp/loft-dev-run.log /tmp/loft-promo.log
+          for name in notch expanded answer folders settings tray; do
+            test -s "/tmp/loft-promo-${name}.png"
+          done
+          # The collapsed notch is the 320x76 window, not the whole screen.
+          identify /tmp/loft-promo-notch.png | tee /tmp/loft-identify.txt
+          grep -E '320x76' /tmp/loft-identify.txt
+
+      - name: Window, tray, hotkey, and smoke-engines
+        run: |
+          set -euo pipefail
+          eval "$(.github/linux-display.sh)"
+          appdata="${XDG_DATA_HOME:-$HOME/.local/share}/com.loft.desktop"
+          mkdir -p "$appdata"
+          printf '%s\n' '{"chat":null,"embed":null}' > "$appdata/selection.json"
+
+          echo "===== window probe ====="
+          LOFT_SMOKE_SCRIPT=linux-window-probe.js .github/linux-run.sh WINDOW-OK 240 window
+          cp -f /tmp/loft-dev-run.log /tmp/loft-window.log
+
+          echo "===== smoke-engines (expects E-SKIP with one target) ====="
+          LOFT_SMOKE_SCRIPT=smoke-engines.js .github/linux-run.sh E-SKIP 900 engines
+          cp -f /tmp/loft-dev-run.log /tmp/loft-engines.log
+
+      - name: Build the deb and the AppImage
+        run: |
+          set -euo pipefail
+          pkill -f 'binaries/linux-x64-.*/llama-server' || true
+          rm -rf src-tauri/target/debug
+          df -h /
+          npm run tauri -- build --bundles deb,appimage
+          deb=$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -1)
+          appimage=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -1)
+          test -n "$deb"
+          test -n "$appimage"
+          test -s "$deb"
+          test -s "$appimage"
+          echo "deb: $deb"
+          echo "appimage: $appimage"
+          dpkg-deb -I "$deb"
+          dpkg-deb -c "$deb" | awk '/llama-server$/'
+          echo "$deb" > /tmp/loft-deb-path.txt
+          echo "$appimage" > /tmp/loft-appimage-path.txt
+          ls -lh "$deb" "$appimage"
+
+      - name: Launch the built app
+        run: |
+          set -euo pipefail
+          eval "$(.github/linux-display.sh)"
+          # Run the release binary out of the deb so the bundled engine is
+          # the one that starts. Extracting avoids needing a package install.
+          mkdir -p /tmp/loft-deb
+          dpkg-deb -x "$(cat /tmp/loft-deb-path.txt)" /tmp/loft-deb
+          bin=$(find /tmp/loft-deb -type f -path '*/loft' | head -1)
+          test -n "$bin"
+          bundled=$(find /tmp/loft-deb -type f -name llama-server | head -1)
+          test -x "$bundled"
+          "$bundled" --version
+          "$bin" >/tmp/loft-release.log 2>&1 &
+          echo $! >/tmp/loft-release.pid
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if xwininfo -root -tree 2>/dev/null | grep -q '"Loft"'; then
+              break
+            fi
+            sleep 1
+          done
+          xwininfo -root -tree | awk '/Loft|loft/' || true
+          sleep 2
+          import -window root /tmp/loft-release.png || true
+          kill "$(cat /tmp/loft-release.pid)" 2>/dev/null || true
+          pkill -f '/tmp/loft-deb' || true
+          pgrep -a loft || echo "(loft stopped)"
+
+      - name: Screenshots
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-screenshots
+          path: |
+            /tmp/loft-promo-*.png
+            /tmp/loft-release.png
+          if-no-files-found: ignore
+
+      # The account's Actions artifact quota can reject the upload. The
+      # pictures are small; keep a copy in the log so they are not lost.
+      - name: Screenshot bytes
+        if: always()
+        run: |
+          set +e
+          shopt -s nullglob
+          for f in /tmp/loft-promo-*.png /tmp/loft-release.png; do
+            echo "LOFT_PNG_BEGIN $(basename "$f")"
+            base64 -w 0 "$f"
+            echo
+            echo "LOFT_PNG_END $(basename "$f")"
+          done
+
+      - name: What the runner saw
+        if: always()
+        run: |
+          {
+            echo "## Linux x64"
+            echo
+            echo '```'
+            . /etc/os-release
+            echo "$PRETTY_NAME"
+            uname -m
+            echo '```'
+            echo
+            if [ -f /tmp/loft-discover.txt ]; then
+              echo "### Engine discovery"
+              echo '```'
+              grep -E 'cpu:|hardware:|Vulkan|CPU|CUDA|OpenVINO|default target:|note:' /tmp/loft-discover.txt || true
+              echo '```'
+            fi
+            for f in /tmp/loft-promo.log /tmp/loft-window.log /tmp/loft-engines.log; do
+              [ -f "$f" ] || continue
+              echo
+              echo "### $(basename "$f")"
+              echo '```'
+              grep -a '\[dev\]' "$f" || true
+              grep -a -E 'could not (create the tray icon|register global shortcut)' "$f" || echo "(no tray or shortcut error logged)"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # An unsupported runner label cancels the Ubuntu job before any step
+  # runs. GitHub then reports that job as cancelled, which is not a
+  # failure, so the commit can look green. This job runs either way and
+  # fails unless the Ubuntu job succeeded.
+  require-success:
+    name: Linux job must succeed
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: x64
+    steps:
+      - name: Fail unless the Ubuntu job succeeded
+        run: |
+          result="${{ needs.x64.result }}"
+          echo "Linux job result: $result"
+          if [ "$result" != "success" ]; then
+            echo "A cancelled, skipped, or failed Linux job is not a pass."
+            exit 1
+          fi
