@@ -11,17 +11,21 @@ to check the rest on other hardware and operating systems.
   build answered from `sample-docs` on Metal with a citation, the non-resizable window
   resized (collapsed, expanded, larger, and the right edge), the tray icon was created and
   is visible in the menu bar, the hotkey registered with no error, and `tauri build`
-  produced an ad-hoc-signed `.app` and `.dmg` that launched. **Not done on macOS:** pressing
-  Cmd+Shift+Space, opening the tray menu, dragging the floating window, a real Retina
-  display, battery or power switching (still unimplemented and always treated as mains),
-  OCR, and the full `smoke-ui.js` / `smoke-restart.js` scripts.
-- **Linux x64 has been built and run** (debug app, `.deb`, and AppImage). Commands and
-  where the files land are in [Building](building.md). Still open: Wayland, a machine with a
-  GPU, arm64, and installing those packages with a package manager.
+  produced an ad-hoc-signed `.app` and `.dmg` that launched. **The owner has pressed
+  Cmd+Shift+Space on a real Retina Mac and it summoned Loft.** The runner itself is not
+  Retina and did not press the key or open the tray menu. **Still not done on macOS:**
+  opening the tray menu, dragging the floating window, battery or power switching (still
+  unimplemented and always treated as mains), OCR, and the full `smoke-ui.js` /
+  `smoke-restart.js` scripts.
+- **Linux x64 has been built and run once, under Xvfb at 1920×1080.** The record (CPU
+  answer, window sizes, the panel icon, Ctrl+Shift+Space via `xdotool`, the `.deb` and
+  AppImage) is in [HANDOVER.md](../HANDOVER.md). How to build is in [Building](building.md).
+  Still open: Wayland, a machine with a GPU, arm64, and installing those packages with a
+  package manager.
 - **Not exercised by any test:** the native Add-folder dialog, the remove-folder button,
-  clicking a source to open it, the tray icon and the global hotkey (they need a real click or
-  key press), turning on Launch at login (only allowed in an installed build), and installing
-  from the installers (they were built and their contents checked, not run).
+  clicking a source to open it, clicking the tray icon (it needs a real click), turning on
+  Launch at login (only allowed in an installed build), and installing from the installers
+  (they are built; the installed copy has not been run through a package manager).
 - **The NPU has been run on one machine, with one model.** See
   [OpenVINO and the NPU](engines.md#openvino-and-the-npu-what-experimental-means-here).
 - **CUDA was run on one laptop, OpenVINO on two.** `fetch-llama cuda` /
@@ -35,9 +39,9 @@ to check the rest on other hardware and operating systems.
   for it. Other folders may sit differently from the sample one.
 - **Dragging the floating window and clicking the tray icon need a real hand.**
   The tests resize and move the window themselves. On the macOS runner the tray icon shows
-  in the menu bar; the hotkey registered, and nobody pressed it or opened the menu there.
-  On Linux the indicator was drawn, and Ctrl+Shift+Space sent with `xdotool` opened the
-  panel. Nobody has clicked the icon or dragged the window.
+  in the menu bar and nobody opened that menu; the owner has pressed Cmd+Shift+Space on a
+  real Retina Mac. On Linux the indicator was drawn in the panel and `xdotool` sent
+  Ctrl+Shift+Space, which opened the panel. Nobody has clicked the icon.
 - **Power changes were simulated.** Windows' power notification is registered and the
   switching logic is tested end to end with simulated readings, but the charger was not
   actually pulled, and no energy figure has been measured (that needs a run on battery).
