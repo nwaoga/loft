@@ -38,9 +38,57 @@ shot() {
   screencapture -x "$dest" || true
 }
 
+# Promo script logs "SHOT <name>". Each one is a full-screen capture of the
+# real window (no test banner). "hold" is the pause where we also grab the
+# menu bar and try to open the tray menu.
+promo_seen=" "
+promo_shots() {
+  [ -f "$log" ] || return 0
+  local name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case " $promo_seen " in
+      *" $name "*) continue ;;
+    esac
+    promo_seen="$promo_seen $name "
+    if [ "$name" = "hold" ]; then
+      local width
+      width=$(system_profiler SPDisplaysDataType | sed -n 's/.*Resolution: \([0-9][0-9]*\) x [0-9][0-9]*.*/\1/p' | head -1)
+      width=${width:-1440}
+      screencapture -x -R "0,0,${width},90" /tmp/loft-macos-menubar.png || true
+      # Opening the status menu needs Accessibility. A refusal is recorded;
+      # the menu-bar strip above is the capture we still keep.
+      osascript <<'EOF' > /tmp/loft-tray-click.txt 2>&1 || true
+tell application "System Events"
+  set procs to {"loft", "Loft"}
+  repeat with procName in procs
+    if exists process procName then
+      tell process procName
+        set frontmost to true
+        try
+          click (first menu bar item of menu bar 2 whose description contains "Loft" or name contains "Loft")
+          return "clicked " & procName
+        end try
+      end tell
+    end if
+  end repeat
+  return "no Loft status item"
+end tell
+EOF
+      sleep 1
+      screencapture -x /tmp/loft-macos-tray.png || true
+      echo "tray click: $(tr '\n' ' ' < /tmp/loft-tray-click.txt)"
+    else
+      screencapture -x "/tmp/loft-macos-${name}.png" || true
+      echo "captured loft-macos-${name}.png"
+    fi
+  done < <(grep -a -o 'SHOT [a-z0-9-]*' "$log" | awk '{print $2}')
+}
+
 deadline=$((SECONDS + timeout_s))
 while kill -0 "$pid" 2>/dev/null; do
   if [ -f "$log" ]; then
+    promo_shots
     if grep -a -q "probe expanded OK" "$log"; then
       shot expanded
     fi
@@ -73,6 +121,7 @@ else
 fi
 wait "$pid" 2>/dev/null || true
 pkill -f "src-tauri/target/debug/loft" 2>/dev/null || true
+pkill -f "binaries/mac-arm64-metal/llama-server" 2>/dev/null || true
 pkill -f "vite.js" 2>/dev/null || true
 pkill -f "node_modules/.bin/vite" 2>/dev/null || true
 sleep 2
