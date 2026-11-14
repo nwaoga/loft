@@ -1,6 +1,10 @@
 // Promo captures for the macOS runner. No test banner and no debug copy:
 // the window should look like Loft in ordinary use, on the sample folder.
 //
+// The saved placement is left alone (top, centred). Just before each shot
+// the window is moved to the top-right so the crop can show the notch under
+// the menu bar, near the tray icons. That move is not saved.
+//
 // Signals the shell with "SHOT <name>" (dev_log also prints the window
 // geometry) and ends with "PROMO-OK". Needs the chat and embedding models
 // selected, and sample-docs seeded by scripts/smoke.sh.
@@ -60,17 +64,39 @@
     }, 240000, "sample-docs to finish indexing");
     await log(`promo indexed | ${folder.fileCount} files, ${folder.chunkCount} chunks`);
 
+    // Slide the window under the right-hand end of the menu bar. Docking
+    // (opening the panel) puts it back in the centre, so this is called
+    // again after every resize, and only then is SHOT logged.
+    const placeTopRight = async () => {
+      const api = window.__TAURI__.window;
+      if (!api || !api.getCurrentWindow) fail("window.__TAURI__.window is missing");
+      const win = api.getCurrentWindow();
+      const factor = await win.scaleFactor();
+      const size = await win.outerSize();
+      const logicalW = size.width / factor;
+      const x = Math.max(0, screen.width - logicalW - 10);
+      const y = screen.availTop || 0;
+      await win.setPosition({ type: "Logical", x, y });
+      const wantX = Math.round(x * factor);
+      const wantY = Math.round(y * factor);
+      const geo = await waitFor(async () => {
+        const g = await log("promo park");
+        return Math.abs(g[2] - wantX) <= 16 && Math.abs(g[3] - wantY) <= 16 ? g : null;
+      }, 5000, "the window to sit at the top right");
+      await log(`promo parked | target ${Math.round(x)},${Math.round(y)} | at ${geo[2]},${geo[3]}`);
+    };
+    const shot = async (name) => {
+      await placeTopRight();
+      await log("SHOT " + name);
+      await sleep(2500);
+    };
+
     // Collapsed notch, then the open panel with nothing asked yet.
-    await log("SHOT notch");
-    await sleep(2500);
+    await shot("notch");
     $(".pill").click();
-    await sleep(700);
-    if (screen.height >= 900) {
-      $('[aria-label="Larger window"]').click();
-      await sleep(800);
-    }
-    await log("SHOT idle");
-    await sleep(2500);
+    await waitFor(() => document.querySelector(".notch.expanded"), 5000, "the panel to open");
+    await sleep(600);
+    await shot("idle");
 
     const ask = async (q) => {
       const ta = $("textarea");
@@ -88,19 +114,16 @@
     if (answer.length < 20 || /couldn't find that/i.test(answer)) fail(`no usable answer: ${answer.slice(0, 240)}`);
     if (!sources) fail("the answer has no sources");
 
-    // The reply on its own, then the same reply with the cited excerpts open.
-    if ($(".turn.last .sources.open")) sources.click();
+    // The reply with the cited excerpts open, then Settings.
+    if (sources && !$(".turn.last .sources.open")) sources.click();
+    await waitFor(() => $(".turn.last .sources.open"), 5000, "the sources to open");
     await sleep(400);
-    await log("SHOT answer");
-    await sleep(2500);
-    if (!$(".turn.last .sources.open")) $(".turn.last .sources-toggle").click();
+    await shot("sources");
+    $('[aria-label="Settings"]').click();
+    await waitFor(() => document.querySelector(".tab-content.shown .settings"), 5000, "Settings to open");
     await sleep(500);
-    await log("SHOT citations");
-    await sleep(2500);
+    await shot("settings");
 
-    // Leave the panel up so the shell can grab the menu bar and the tray menu.
-    await log("SHOT hold");
-    await sleep(8000);
     await log("PROMO-OK");
     await invoke("quit_app");
   } catch (e) {

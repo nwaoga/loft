@@ -110,19 +110,25 @@ jobs:
             "f7af6f66802f4df86eda10fe9bbcfc75c39562bed48ef6ace719a251cf1c2fdb"
           printf '%s\n' '{"chat":"qwen2.5-3b-instruct-q4","embed":"nomic-embed-text-v1.5"}' \
             > "$HOME/Library/Application Support/com.loft.desktop/selection.json"
-          # A quieter desktop: the dock slides away so the notch is the picture.
-          defaults write com.apple.dock autohide -bool true
-          killall Dock || true
+
+      - name: Light desktop for screenshots
+        run: |
+          set -euo pipefail
+          chmod +x .github/macos-desktop.sh
+          # Highest display mode the runner lists, then a light wallpaper.
+          # The notch's saved position is not involved.
+          .github/macos-desktop.sh
 
       - name: Promo screenshots
         run: |
           set -euo pipefail
           chmod +x .github/macos-run.sh
-          # Idle notch, an answer, and the cited excerpts. The script does
-          # not paint a test banner. Screenshots land in /tmp/loft-macos-*.png.
+          # Collapsed, open and idle, an answer with sources, and Settings.
+          # The script slides the window to the top-right only while these
+          # are taken, then the app quits. Crops land in /tmp/loft-macos-*.png.
           LOFT_SMOKE_SCRIPT=macos-promo.js .github/macos-run.sh PROMO-OK 2400 promo
           cp -f /tmp/loft-dev-run.log /tmp/loft-promo.log
-          for name in notch idle answer citations; do
+          for name in notch idle sources settings; do
             test -s "/tmp/loft-macos-${name}.png"
           done
           ls -lh /tmp/loft-macos-*.png || true
@@ -227,11 +233,25 @@ jobs:
               grep -E 'cpu:|hardware:|Metal|CPU|default target:|skip:' /tmp/loft-discover.txt || true
               echo '```'
             fi
+            if [ -f /tmp/loft-desktop.txt ]; then
+              echo
+              echo "### Desktop"
+              echo '```'
+              cat /tmp/loft-desktop.txt
+              echo '```'
+            fi
             if [ -f /tmp/loft-promo.log ]; then
               echo
               echo "### Promo"
               echo '```'
               grep -a '\[dev\]' /tmp/loft-promo.log || true
+              echo '```'
+            fi
+            if [ -f /tmp/loft-promo-crops.txt ]; then
+              echo
+              echo "### Promo crops"
+              echo '```'
+              cat /tmp/loft-promo-crops.txt
               echo '```'
             fi
             if [ -f /tmp/loft-tray-click.txt ]; then
