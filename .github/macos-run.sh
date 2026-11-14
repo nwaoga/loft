@@ -21,7 +21,7 @@ shot_tag=${3:-}
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 log=/tmp/loft-dev-run.log
-rm -f "$log"
+rm -f "$log" /tmp/loft-promo-crops.txt
 
 # shellcheck disable=SC2094
 script -q -F "$log" scripts/smoke.sh "${LOFT_SMOKE_SCRIPT:-smoke-ui.js}" &
@@ -38,9 +38,49 @@ shot() {
   screencapture -x "$dest" || true
 }
 
-# Promo script logs "SHOT <name>". Each one is a full-screen capture of the
-# real window (no test banner). "hold" is the pause where we also grab the
-# menu bar and try to open the tray menu.
+# Promo script logs "SHOT <name>". Each one is cropped to the menu bar and the
+# notch. The script parks the window at the top-right for that capture only;
+# "hold" still grabs the menu bar and tries the tray menu.
+crop_promo() {
+  local name=$1
+  local line dpr sw sh
+  line=$(grep -a "SHOT ${name} |" "$log" | tail -1 | tr -d '\r')
+  dpr=$(grep -a -o 'dpr=[0-9.][0-9.]*' "$log" | tail -1 | sed 's/dpr=//')
+  dpr=${dpr:-1}
+  # screen=WxH in the promo log is CSS pixels, the unit screencapture -R uses.
+  sw=$(grep -a -o 'screen=[0-9][0-9]*x[0-9][0-9]*' "$log" | tail -1 | sed 's/screen=//;s/x.*//')
+  sh=$(grep -a -o 'screen=[0-9][0-9]*x[0-9][0-9]*' "$log" | tail -1 | sed 's/screen=[0-9]*x//')
+  sw=${sw:-1024}
+  sh=${sh:-768}
+  python3 - "$name" "$line" "$dpr" "$sw" "$sh" <<'PY'
+import re, subprocess, sys
+name, line, dpr, sw, sh = sys.argv[1:]
+dpr = float(dpr) or 1.0
+sw, sh = int(sw), int(sh)
+dest = f"/tmp/loft-macos-{name}.png"
+m = re.search(r"window (\d+)x(\d+) at (-?\d+),(-?\d+)", line)
+if not m:
+    note = f"crop {name}: no window geometry; full screen"
+    print(note)
+    open("/tmp/loft-promo-crops.txt", "a").write(note + "\n")
+    subprocess.run(["screencapture", "-x", dest], check=False)
+    sys.exit(0)
+w, h, x, y = [int(v) / dpr for v in m.groups()]
+pad_left, pad_bottom = 220, 36
+left = max(0, int(round(x - pad_left)))
+top = 0
+bottom = min(sh, int(round(y + h + pad_bottom)))
+if bottom - top < 120:
+    bottom = min(sh, top + 120)
+width = max(1, sw - left)
+height = max(1, bottom - top)
+note = f"crop {name}: window {w:.0f}x{h:.0f} at {x:.0f},{y:.0f} -> {left},{top} {width}x{height} on {sw}x{sh} dpr {dpr:g}"
+print(note)
+open("/tmp/loft-promo-crops.txt", "a").write(note + "\n")
+subprocess.run(["screencapture", "-x", "-R", f"{left},{top},{width},{height}", dest], check=False)
+PY
+}
+
 promo_seen=" "
 promo_shots() {
   [ -f "$log" ] || return 0
@@ -79,7 +119,7 @@ EOF
       screencapture -x /tmp/loft-macos-tray.png || true
       echo "tray click: $(tr '\n' ' ' < /tmp/loft-tray-click.txt)"
     else
-      screencapture -x "/tmp/loft-macos-${name}.png" || true
+      crop_promo "$name"
       echo "captured loft-macos-${name}.png"
     fi
   done < <(grep -a -o 'SHOT [a-z0-9-]*' "$log" | awk '{print $2}')
