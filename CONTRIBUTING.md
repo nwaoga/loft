@@ -4,7 +4,8 @@ Thanks for helping with Loft. Issues and pull requests are welcome.
 
 ## Setup
 
-Prerequisites and how to run the app are in [README.md](README.md). In short:
+Prerequisites and how to run the app are in [README.md](README.md#quick-start)
+and [docs/building.md](docs/building.md). In short:
 
 ```bash
 npm install
