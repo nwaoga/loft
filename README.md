@@ -6,7 +6,10 @@ data, pick small models from a built-in list, and ask questions with cited sourc
 **macOS, Linux and Windows**. Looks like a macOS notch: a pill at the top-center that expands.
 
 > Status: **all planned milestones (M0–M6) are implemented.** Built and tested on Windows 11
-> (CPU and Vulkan GPU). The macOS and Linux paths are written but have **not been built or run**.
+> (CPU and Vulkan GPU). On 14 November 2026 it was also built and run on a GitHub-hosted
+> **macOS 15 Apple Silicon** runner (Metal): the app, the `.dmg`, a real answer from
+> `sample-docs`, and window resizing. Linux has **not** been built or run. The Mac run was
+> not a Retina display and did not press the hotkey or open the tray menu.
 > See [Known gaps](#known-gaps).
 >
 > On Windows, build and run through `scripts\win-dev.bat` (it selects the complete MSVC toolset).
@@ -544,9 +547,20 @@ Debug builds also have `dev_set_power` (pretend the power source changed), `dev_
 [HANDOVER.md](HANDOVER.md) sets out what was verified on which system, what was not, and how
 to check the rest on other hardware and operating systems.
 
-- **macOS and Linux are untested.** The code paths, `fetch-llama` entries and bundle config
-  exist, but nothing has been built or run there. Window resizing of a non-resizable window
-  and the tray icon are the likeliest things to need attention.
+- **macOS has been built and run once, on a GitHub `macos-15` Apple Silicon runner**
+  (macOS 15.8.2, 14 November 2026). `macos-14` no longer exists as a runner image. That
+  machine is not Retina (1024×768 at 1×) and its GPU is the paravirtual device llama.cpp
+  calls `MTL0`. What that run showed, and what it did not, is in
+  [HANDOVER.md](HANDOVER.md). In short: `fetch-llama` and the Metal server work, a debug
+  build answered from `sample-docs` on Metal with a citation, the non-resizable window
+  resized (collapsed, expanded, larger, and the right edge), the tray icon was created and
+  is visible in the menu bar, the hotkey registered with no error, and `tauri build`
+  produced an ad-hoc-signed `.app` and `.dmg` that launched. **Not done on macOS:** pressing
+  Cmd+Shift+Space, opening the tray menu, dragging the floating window, a real Retina
+  display, battery or power switching (still unimplemented and always treated as mains),
+  OCR, and the full `smoke-ui.js` / `smoke-restart.js` scripts.
+- **Linux is untested.** The code paths, `fetch-llama` entries and bundle config exist,
+  but nothing has been built or run there.
 - **Not exercised by any test:** the native Add-folder dialog, the remove-folder button,
   clicking a source to open it, the tray icon and the global hotkey (they need a real click or
   key press), turning on Launch at login (only allowed in an installed build), and installing
@@ -562,9 +576,10 @@ to check the rest on other hardware and operating systems.
   floor for both, EmbeddingGemma found nothing: it scores a relevant excerpt around 0.25 to
   0.35.) **BGE-M3 has not been measured** and takes the default of 0.45, which may be wrong
   for it. Other folders may sit differently from the sample one.
-- **Dragging the floating window, the tray icon and the hotkey need a real hand.** The test
-  moves the window and calls what the tray icon calls; nobody has yet dragged it with a mouse
-  or clicked the icon on macOS or Linux.
+- **Dragging the floating window, clicking the tray icon, and pressing the hotkey need a real hand.**
+  The tests resize and move the window themselves. On the macOS runner the tray icon was
+  created and shows in the menu bar, and the hotkey registered without an error, but nothing
+  clicked that icon or pressed Cmd+Shift+Space. The same is untested on Linux.
 - **Power changes were simulated.** Windows' power notification is registered and the
   switching logic is tested end to end with simulated readings, but the charger was not
   actually pulled, and no energy figure has been measured (that needs a run on battery).

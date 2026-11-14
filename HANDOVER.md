@@ -140,9 +140,37 @@ then reached `[dev] 17 DONE` with Qwen 2.5 3B and EmbeddingGemma, and again with
 Nomic. **Still to check:** the Llama 3.2 / EmbeddingGemma pair itself on this machine (the
 re-test used Qwen as the chat model), and BGE-M3, which has no measured floor.
 
+### GitHub-hosted macOS 15, Apple Silicon — 14 November 2026
+
+Not a laptop on a desk. A `macos-15` Actions runner: macOS 15.8.2, arm64, 3 CPU threads,
+display 1024×768 at scale 1 (not Retina; the menu bar is 25 points), GPU reported by
+llama.cpp as `MTL0: Apple Paravirtual device (4778 MiB)`. Chat model Qwen2.5 3B Instruct
+Q4_K_M and embedding model Nomic Embed Text v1.5 F16, both checked against the catalog
+hashes. The workflow is `.github/workflows/macos.yml`. `macos-14` had already been retired,
+so that label never started a machine.
+
+| Check | Result |
+|---|---|
+| `npm run check` | passed |
+| `cargo test --lib` | 94 passed, 12 ignored |
+| `npm run fetch-llama` | Metal archive unpacked (30 files). Symlinked `.dylib` names are copied as real files; Node's `cpSync` refuses them on macOS |
+| `llama-server --version` and `--list-devices` | `0.9.0-dev (build 12110)`; `MTL0` listed |
+| `engines_on_this_computer_are_discovered` | `Metal Available`; CPU build not installed (none is pinned for `mac-arm64`); default target **Metal** |
+| Promo script on `sample-docs` | indexed 7 files, 4 chunks; answer on Metal: "Priya owns the supplier contract with BeanWorks." at 2 tokens/s, one source (`project-plan.md`, 67%) |
+| Window resize (non-resizable window) | collapsed 320×76 at (352, 25); expanded 540×580 at (242, 25); larger 1000×699; right edge 520×600 at (504, 84), flush with the 1024-wide screen and centred vertically |
+| Tray | `trayAvailable=true`. A purple menu-bar icon is visible in the screenshots. AppleScript did not find a status item named "Loft", so the menu was not opened |
+| Global hotkey | registration logged no error. The key was not pressed, and no Accessibility prompt was observed |
+| `smoke-engines.js` | `E-SKIP` (one GPU target, as the script requires two) |
+| `npm run tauri build` | `Loft.app` 81.64 MiB, ad-hoc signed; `Loft_0.1.1_aarch64.dmg` 29.49 MiB. The bundled `llama-server` still reports build 12110 |
+| Launch the built app | `open Loft.app` left the process running; the collapsed notch was on screen |
+
+Two fixes came out of the first red runs. `fetch-llama` used `cpSync` on symlinked libraries, which macOS Node rejects. And Metal is not asked for a device list, so resolving it used to demand a graphics card, find none, and refuse to start a model. It now runs as the Apple GPU with no `--device` argument.
+
+**Not verified on macOS:** a Retina display, pressing the hotkey, opening the tray menu, dragging the floating window, `smoke-ui.js` and `smoke-restart.js` in full, OCR, power switching (still always "unknown", treated as mains), the hardware list (still empty), and running the `.dmg` through an install.
+
 ## 3. What remains unverified
 
-This is the list to work through beyond the two Windows machines above.
+This is the list to work through beyond the two Windows machines and the one macOS runner above.
 
 **Hardware and power**
 
@@ -153,9 +181,8 @@ This is the list to work through beyond the two Windows machines above.
   power notification is registered but the charger was never pulled, and no energy figure
   has been measured (that needs *Test performance* run on battery).
 
-**Platforms never built or run: macOS and Linux**
+**Linux has never been built or run. macOS has, once, on the runner above.**
 
-The code paths exist and compile on Windows as far as `cfg` allows. Expect to find problems.
 Known differences, by design or by omission:
 
 | Area | Windows | macOS | Linux |
@@ -167,8 +194,8 @@ Known differences, by design or by omission:
 | Model servers die with Loft if it is killed | yes (job object) | no: stopped on a normal quit only | no |
 | OCR for pictures and scanned PDFs | yes | no text is indexed for them | no |
 | Optional engine archives | `.zip`, unpacked in-process | `.tar.gz` via the system `tar` | `.tar.gz` via the system `tar` |
-| Tray | left click opens, menu has Show/hide and Quit | menu bar icon; "Live in the tray" also drops the Dock icon **from the next launch** | needs `libayatana-appindicator3`; click events may not arrive (use the menu) |
-| Window placement | works | untested | untested; **Wayland does not let an app position its window**, so docking and the saved floating position are in doubt there |
+| Tray | left click opens, menu has Show/hide and Quit | menu bar icon was created and is visible on the runner; the menu was not opened. "Live in the tray" also drops the Dock icon **from the next launch** (not tried) | needs `libayatana-appindicator3`; click events may not arrive (use the menu) |
+| Window placement | works | notch, expanded panel, larger panel, and the right edge were measured on the 1024×768 runner. Not Retina, and not dragged with a mouse | untested; **Wayland does not let an app position its window**, so docking and the saved floating position are in doubt there |
 
 **Interaction that needs a real hand**
 
@@ -251,7 +278,7 @@ set LOFT_SMOKE_KEEP=
 scripts\win-smoke.bat smoke-engines.js
 ```
 
-macOS / Linux (`scripts/smoke.sh` mirrors `win-smoke.bat`; **it has never been run**):
+macOS / Linux (`scripts/smoke.sh` mirrors `win-smoke.bat`. On 14 November 2026 it was run on the macOS 15 runner for the promo script, the window probe, and `smoke-engines.js`. It has not been run on Linux):
 
 ```bash
 scripts/smoke.sh
