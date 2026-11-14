@@ -13,8 +13,10 @@ releases/
 models/
 *.gguf
 
-# llama.cpp binaries pulled in during setup
-src-tauri/binaries/
+# llama.cpp binaries pulled in during setup (the folder itself stays,
+# so a fresh checkout can still compile: tauri.conf.json bundles it)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
 
 # os / editor
 .DS_Store
