@@ -20,6 +20,13 @@ PowerPoint, spreadsheets, pictures), splits it into chunks, and keeps the index 
 files change. While a folder is indexing it shows the file count and, for a large file, how far
 through that file it is ("orders.xlsx · 1,200 of 2,000 chunks").
 
+You can also **drag files straight onto the window**. A dropped file is copied into your Loft
+**library** (a folder Loft keeps at `<app data>/Library/`, so the file stays available even if
+you move or delete the original) and indexed, ready to ask about right away. Dropping the same
+file twice does nothing; a file whose type Loft can't read is kept but not indexed, and it
+tells you. Drop a **folder** and it is added in place as one of your indexed folders. The
+library shows up in **Folders** like any other once you have dropped something.
+
 Very large files are indexed **in part**: at most 2,000 chunks (about 3 MB of text) per file.
 Data exports such as spreadsheets of orders can hold tens of thousands of rows, which took a
 long time to index and made poor answers. The folder says how many files were cut short. A
