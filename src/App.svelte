@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ui, expand, collapse, toggle, toggleLarge } from "./lib/state.svelte";
+  import { ui, drop, expand, collapse, toggle, toggleLarge } from "./lib/state.svelte";
   import {
     isTauri,
     getRuntimeStatus,
@@ -11,7 +11,10 @@
     movedByLoft,
     onWindowMoved,
     startWindowDrag,
+    onFileDrop,
+    addDocuments,
   } from "./lib/api";
+  import type { AddDocumentsResult } from "./lib/types";
   import { windowStyle, windowMoved } from "./lib/window-style.svelte";
   import type { FolderInfo, RuntimeStatus } from "./lib/types";
   import type { Tab } from "./lib/state.svelte";
@@ -62,6 +65,22 @@
     // Folder state drives the pill's "Indexing…" hint and the Ask tab's guidance.
     refreshFolders();
     onFoldersChanged(refreshFolders).then((un) => cleanups.push(un));
+
+    // Files dragged onto the window: copy them into the Loft library and index
+    // them. The chat window is the drop surface, so a drop opens the Ask view.
+    onFileDrop({
+      onOver() {
+        drop.dragging = true;
+        if (!ui.expanded) expand("ask");
+      },
+      onLeave() {
+        drop.dragging = false;
+      },
+      onDrop(paths) {
+        drop.dragging = false;
+        handleDrop(paths);
+      },
+    }).then((un) => cleanups.push(un));
 
     // Collapse when clicking outside the notch (preview + Tauri both benefit)
     const onDown = (e: MouseEvent) => {
@@ -114,6 +133,38 @@
     if (windowStyle.value !== "floating" || e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button")) return; // the tabs and buttons still work
     startWindowDrag().catch(() => {});
+  }
+
+  // A drop lands here: show the Ask view, add the files, then report the result
+  // in the chat view. Indexing itself runs in the background (the Folders
+  // state and the status bar show its progress).
+  async function handleDrop(paths: string[]) {
+    if (!paths.length) return;
+    expand("ask");
+    drop.note = { text: paths.length === 1 ? "Adding…" : `Adding ${paths.length} items…`, tone: "ok" };
+    try {
+      drop.note = summariseDrop(await addDocuments(paths));
+    } catch (e) {
+      drop.note = { text: `Could not add that: ${e}`, tone: "warn" };
+    }
+    refreshFolders();
+  }
+
+  function summariseDrop(r: AddDocumentsResult): { text: string; tone: "ok" | "warn" } {
+    const n = (list: string[], one: (name: string) => string, many: (count: number) => string) =>
+      list.length === 1 ? one(list[0]) : many(list.length);
+    const parts: string[] = [];
+    if (r.added.length) parts.push(n(r.added, (f) => `Added ${f} — ask away.`, (c) => `Added ${c} files — ask away.`));
+    if (r.foldersAdded.length)
+      parts.push(n(r.foldersAdded, (f) => `Added folder ${f}.`, (c) => `Added ${c} folders.`));
+    if (r.storedOnly.length)
+      parts.push(n(r.storedOnly, (f) => `Kept ${f} (that type can't be indexed).`, (c) => `Kept ${c} files that can't be indexed.`));
+    if (r.duplicates.length)
+      parts.push(n(r.duplicates, (f) => `${f} was already in Loft.`, (c) => `${c} were already in Loft.`));
+    if (r.failed.length) parts.push(n(r.failed, () => `One item couldn't be added.`, (c) => `${c} items couldn't be added.`));
+    const nothingAdded = !r.added.length && !r.foldersAdded.length && !r.storedOnly.length;
+    const tone: "ok" | "warn" = r.failed.length && nothingAdded ? "warn" : "ok";
+    return { text: parts.join(" ") || "Nothing to add.", tone };
   }
 
   const ready = $derived(
@@ -260,6 +311,14 @@
           <span class="status-text">{statusText}</span>
           <span class="accel" title={runtime?.message ?? "What the models run on"}>{runtime?.accelerator ?? "…"}</span>
         </footer>
+
+        {#if drop.dragging}
+          <div class="dropzone" aria-hidden="true">
+            <Icon name="download" size={28} />
+            <p class="drop-title">Drop to add to Loft</p>
+            <p class="drop-sub">Files are kept in your Loft library and indexed so you can ask about them.</p>
+          </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -497,6 +556,37 @@
     opacity: 1;
     pointer-events: auto;
     transition: opacity 0.28s ease 0.14s;
+  }
+
+  /* Shown over the whole panel while files are dragged onto the window. */
+  .dropzone {
+    position: absolute;
+    inset: 8px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-align: center;
+    padding: 24px;
+    border-radius: var(--radius-panel, 18px);
+    border: 2px dashed var(--accent, #6aa3ff);
+    background: color-mix(in srgb, var(--notch, #111) 86%, var(--accent, #6aa3ff));
+    color: var(--text, #fff);
+    pointer-events: none;
+  }
+  .drop-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .drop-sub {
+    margin: 0;
+    max-width: 280px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-dim, #aaa);
   }
 
   .tabs {
