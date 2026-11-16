@@ -22,7 +22,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, chmodSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -157,8 +157,11 @@ async function main() {
           const src = join(from, name);
           if (!statSync(src).isFile()) continue; // follows symlinks; skips dirs
           // Copy symlinked library names as real files so the folder can be
-          // bundled as-is on every OS.
-          cpSync(src, join(staging, name), { dereference: true });
+          // bundled as-is on every OS. `cpSync` is wrong for this on macOS:
+          // Node treats a symlinked `.dylib` as a directory and refuses
+          // ("Recursive option not enabled"). `copyFileSync` follows the
+          // link and writes the file it points at.
+          copyFileSync(src, join(staging, name));
           kept += 1;
           bytes += statSync(join(staging, name)).size;
         }

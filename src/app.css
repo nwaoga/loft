@@ -106,6 +106,24 @@
   --tone-grey: rgba(0, 0, 0, 0.6);
 }
 
+/* Midnight on a Mac is a step off pure black, closer to a native dark window,
+   so the notch reads against the menu bar. The shared midnight values above
+   are what Windows and Linux keep. The swatch in Settings follows along. */
+html[data-platform="macos"][data-theme="midnight"],
+html[data-platform="macos"] [data-theme="midnight"] {
+  --notch: #2a2a2e;
+  --notch-border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --field-bg: rgba(255, 255, 255, 0.08);
+  --field-bg-focus: rgba(255, 255, 255, 0.1);
+  --field-bg-hover: rgba(255, 255, 255, 0.13);
+  --raised: rgba(255, 255, 255, 0.16);
+  --raised-hover: rgba(255, 255, 255, 0.2);
+  --text: rgba(255, 255, 255, 0.96);
+  --text-dim: rgba(255, 255, 255, 0.76);
+  --text-faint: rgba(255, 255, 255, 0.54);
+}
+
 /* (Declared wherever a theme is set, so it is built from that theme's accents.) */
 :root,
 [data-theme] {

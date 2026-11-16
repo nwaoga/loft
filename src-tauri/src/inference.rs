@@ -466,6 +466,8 @@ impl Resolved {
                 // engine follows, to tell apart two ways of driving it.
                 format!("{} ({})", display_name(&device.name), self.backend.label())
             }
+            // Metal does not name a device: the build drives the Apple GPU.
+            None if self.backend != Backend::Cpu => self.backend.label().to_string(),
             _ => "CPU only".to_string(),
         }
     }
@@ -513,6 +515,9 @@ pub fn resolve(inventory: &Inventory, target: &Target) -> Result<Resolved, Strin
                 .ok_or_else(|| format!("the chosen device is not available to {label} right now"))?,
         ),
         (None, Backend::Cpu) => None,
+        // The Metal build is not asked for a device list. It drives the
+        // Apple GPU; there is nothing to name, and no --device argument.
+        (None, Backend::Metal) => None,
         (None, Backend::OpenVino) => info.devices.iter().find(|d| d.kind == DeviceKind::Cpu).cloned(),
         (None, _) => Some(best_gpu(info).cloned().ok_or_else(|| format!("{label} found no graphics card to use"))?),
     };
@@ -1012,9 +1017,11 @@ impl LoadReport {
 }
 
 /// A buffer in system memory: `CPU`, `CPU_Mapped`, `CUDA_Host`, `Vulkan_Host`.
+/// `AMX` is the CPU build's name for weights it keeps in ordinary memory and
+/// multiplies with Intel AMX; it is not a separate device.
 fn is_host_buffer(id: &str) -> bool {
     let id = id.to_ascii_uppercase();
-    id.starts_with("CPU") || id.ends_with("_HOST")
+    id.starts_with("CPU") || id.ends_with("_HOST") || id == "AMX"
 }
 
 /// Whether the model really is where it was asked to be.
@@ -1273,6 +1280,15 @@ mod tests {
         assert!(resolve(&inv, &vulkan("amd-radeon-rx-7600")).unwrap_err().contains("not available to Vulkan right now"));
         // A backend this system does not have at all.
         assert!(resolve(&inv, &Target::new(Backend::Metal, None)).unwrap_err().contains("not supported"));
+
+        // A Mac: Metal is installed and lists no devices. It still resolves,
+        // and automatic uses it. (Asking it for a graphics card used to
+        // refuse, so no model would start.)
+        let mac = inventory(vec![available(Backend::Metal, ""), missing(Backend::Cpu, BackendStatus::NotInstalled)]);
+        let metal = resolve(&mac, &Target::new(Backend::Metal, None)).unwrap();
+        assert_eq!((metal.backend, metal.device.is_none(), metal.label()), (Backend::Metal, true, "Metal".to_string()));
+        assert!(launch_spec(&metal).args.is_empty());
+        assert_eq!(auto_chain(&mac, AutoGoal::Performance, &[]), vec![Target::new(Backend::Metal, None)]);
 
         let no_driver = inventory(vec![BackendInfo {
             detail: Some("The NVIDIA driver is not installed.".into()),
@@ -1645,6 +1661,10 @@ mod tests {
         // only the buffer lines count.
         let none = report(NO_OFFLOAD_LOG);
         assert!(verify(&cpu, &none).ok);
+        // Intel AMX is the CPU build using the processor's matrix unit.
+        let amx = report("0.40.000 I load_tensors:         AMX model buffer size =  1869.00 MiB\n");
+        let on_amx = verify(&cpu, &amx);
+        assert!(on_amx.ok, "{}", on_amx.detail);
         let wrong = verify(&nvidia, &none);
         assert!(!wrong.ok);
         assert_eq!(wrong.detail, "The model was loaded into system memory, not onto NVIDIA GeForce RTX 4050 Laptop GPU.");

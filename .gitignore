@@ -13,8 +13,10 @@ releases/
 models/
 *.gguf
 
-# llama.cpp binaries pulled in during setup
-src-tauri/binaries/
+# llama.cpp binaries pulled in during setup (the folder itself stays,
+# so a fresh checkout can still compile: tauri.conf.json bundles it)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
 
 # os / editor
 .DS_Store
@@ -25,3 +27,32 @@ Thumbs.db
 # env
 .env
 .env.*
+*.env
+
+# local index and chat history (they belong in app data, not the repo)
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# private keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# documents from a real folder. sample-docs/ is the only fixture set.
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.xlsm
+*.ppt
+*.pptx
+*.csv
+*.pdf
+!sample-docs/**/*.pdf

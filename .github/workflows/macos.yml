@@ -1,0 +1,292 @@
+# Build Loft on Apple Silicon and run the checks a window server can do
+# without a person at the machine.
+#
+# macos-14 was retired on 2 November 2026 (the label now fails before a
+# runner starts). macos-15 is the current Apple Silicon image: M1, arm64.
+# It has a window server, so a debug build can open the notch. It cannot
+# grant Accessibility, and a global hotkey or a real click on the tray
+# may be refused. Promo screenshots are taken from this session.
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64:
+    name: build (macos-15 arm64)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Machine
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -m
+          node -v
+          rustc -vV
+          system_profiler SPDisplaysDataType | sed -n '1,40p' || true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Fetch the Metal engine
+        run: |
+          set -euo pipefail
+          npm run fetch-llama
+          bin=src-tauri/binaries/mac-arm64-metal/llama-server
+          test -x "$bin"
+          file "$bin"
+          echo "----- linked libraries -----"
+          otool -L "$bin"
+          echo "----- files -----"
+          ls -lh src-tauri/binaries/mac-arm64-metal
+          echo "----- version -----"
+          "$bin" --version
+          echo "----- list-devices -----"
+          "$bin" --list-devices || true
+
+      - name: Engine discovery sees Metal
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          cargo test --lib runtime::tests::engines_on_this_computer_are_discovered -- --nocapture --exact 2>&1 | tee /tmp/loft-discover.txt
+          grep -E 'Metal[[:space:]]+Available' /tmp/loft-discover.txt
+
+      - name: Download the sample models
+        run: |
+          set -euo pipefail
+          # The pair the answer checks were tuned on. They live in the real
+          # app-data folder; smoke.sh copies only the model choice into the
+          # throwaway profile.
+          models="$HOME/Library/Application Support/com.loft.desktop/models"
+          mkdir -p "$models"
+          fetch() {
+            url=$1
+            file=$2
+            sha=$3
+            dest="$models/$file"
+            if [ -f "$dest" ] && [ "$(shasum -a 256 "$dest" | awk '{print $1}')" = "$sha" ]; then
+              echo "already have $file"
+              return
+            fi
+            echo "downloading $file"
+            curl -fL --retry 5 --retry-all-errors -o "$dest.partial" "$url"
+            echo "$sha  $dest.partial" | shasum -a 256 -c -
+            mv "$dest.partial" "$dest"
+          }
+          fetch \
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf" \
+            "qwen2.5-3b-instruct-q4_k_m.gguf" \
+            "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+          fetch \
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf" \
+            "nomic-embed-text-v1.5.f16.gguf" \
+            "f7af6f66802f4df86eda10fe9bbcfc75c39562bed48ef6ace719a251cf1c2fdb"
+          printf '%s\n' '{"chat":"qwen2.5-3b-instruct-q4","embed":"nomic-embed-text-v1.5"}' \
+            > "$HOME/Library/Application Support/com.loft.desktop/selection.json"
+
+      - name: Light desktop for screenshots
+        run: |
+          set -euo pipefail
+          chmod +x .github/macos-desktop.sh
+          # Highest display mode the runner lists, then a light wallpaper.
+          # The notch's saved position is not involved.
+          .github/macos-desktop.sh
+
+      - name: Promo screenshots
+        run: |
+          set -euo pipefail
+          chmod +x .github/macos-run.sh
+          # Collapsed, open and idle, an answer with sources, and Settings.
+          # The script slides the window to the top-right only while these
+          # are taken, then the app quits. Crops land in /tmp/loft-macos-*.png.
+          LOFT_SMOKE_SCRIPT=macos-promo.js .github/macos-run.sh PROMO-OK 2400 promo
+          cp -f /tmp/loft-dev-run.log /tmp/loft-promo.log
+          for name in notch idle sources settings; do
+            test -s "/tmp/loft-macos-${name}.png"
+          done
+          ls -lh /tmp/loft-macos-*.png || true
+
+      - name: Window, tray, and smoke-engines
+        run: |
+          set -euo pipefail
+          chmod +x .github/macos-run.sh
+          # smoke.sh copies the model choice out of the real app-data folder.
+          # There are no models on the runner; an empty choice lets the app
+          # start. smoke-engines.js then skips (it wants two GPU targets).
+          appdata="$HOME/Library/Application Support/com.loft.desktop"
+          mkdir -p "$appdata"
+          printf '%s\n' '{"chat":null,"embed":null}' > "$appdata/selection.json"
+
+          echo "===== window probe ====="
+          LOFT_SMOKE_SCRIPT=macos-window-probe.js .github/macos-run.sh WINDOW-OK 1500 window
+          cp -f /tmp/loft-dev-run.log /tmp/loft-window.log
+
+          echo "===== smoke-engines (expects E-SKIP on a single GPU) ====="
+          LOFT_SMOKE_SCRIPT=smoke-engines.js .github/macos-run.sh E-SKIP 900 engines
+          cp -f /tmp/loft-dev-run.log /tmp/loft-engines.log
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          # The debug build and the model servers are done. Drop them so the
+          # release link fits on the runner's disk.
+          pkill -f "binaries/mac-arm64-metal/llama-server" || true
+          rm -rf src-tauri/target/debug
+          df -h /
+          npm run tauri -- build
+          app=$(find src-tauri/target/release/bundle/macos -name 'Loft.app' -maxdepth 2 | head -1)
+          test -n "$app"
+          test -d "$app"
+          bundled="$app/Contents/Resources/binaries/mac-arm64-metal/llama-server"
+          test -x "$bundled"
+          echo "app: $app"
+          codesign -dv --verbose=2 "$app" 2>&1 || true
+          "$bundled" --version
+          echo "$app" > /tmp/loft-app-path.txt
+
+      - name: Launch the built app
+        run: |
+          set -euo pipefail
+          app=$(cat /tmp/loft-app-path.txt)
+          open "$app"
+          # Give the window time to appear. The release build has no dev
+          # script, so this only checks that the process stays up.
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if pgrep -lf '[L]oft' >/dev/null || pgrep -lf '/MacOS/loft' >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          pgrep -lf loft
+          sleep 3
+          screencapture -x /tmp/loft-release.png || true
+          osascript -e 'tell application "Loft" to quit' || true
+          sleep 2
+          pkill -f 'Loft.app/Contents/MacOS' || true
+
+      - name: Screenshots
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-screenshots
+          path: |
+            /tmp/loft-macos-*.png
+            /tmp/loft-window-*.png
+            /tmp/loft-release.png
+          if-no-files-found: ignore
+
+      # The account's Actions artifact quota can reject the upload. The
+      # pictures are small; keep a copy in the log so they are not lost.
+      - name: Screenshot bytes
+        if: always()
+        run: |
+          set +e
+          shopt -s nullglob
+          for f in /tmp/loft-macos-*.png /tmp/loft-window-*.png /tmp/loft-release.png; do
+            echo "LOFT_PNG_BEGIN $(basename "$f")"
+            base64 -i "$f"
+            echo "LOFT_PNG_END $(basename "$f")"
+          done
+
+      - name: What the runner saw
+        if: always()
+        run: |
+          {
+            echo "## macOS arm64"
+            echo
+            echo '```'
+            sw_vers
+            uname -m
+            echo '```'
+            echo
+            if [ -f /tmp/loft-discover.txt ]; then
+              echo "### Engine discovery"
+              echo '```'
+              grep -E 'cpu:|hardware:|Metal|CPU|default target:|skip:' /tmp/loft-discover.txt || true
+              echo '```'
+            fi
+            if [ -f /tmp/loft-desktop.txt ]; then
+              echo
+              echo "### Desktop"
+              echo '```'
+              cat /tmp/loft-desktop.txt
+              echo '```'
+            fi
+            if [ -f /tmp/loft-promo.log ]; then
+              echo
+              echo "### Promo"
+              echo '```'
+              grep -a '\[dev\]' /tmp/loft-promo.log || true
+              echo '```'
+            fi
+            if [ -f /tmp/loft-promo-crops.txt ]; then
+              echo
+              echo "### Promo crops"
+              echo '```'
+              cat /tmp/loft-promo-crops.txt
+              echo '```'
+            fi
+            if [ -f /tmp/loft-tray-click.txt ]; then
+              echo
+              echo "### Tray menu click"
+              echo '```'
+              cat /tmp/loft-tray-click.txt
+              echo '```'
+            fi
+            for f in /tmp/loft-window.log /tmp/loft-engines.log; do
+              [ -f "$f" ] || continue
+              echo
+              echo "### $(basename "$f")"
+              echo '```'
+              grep -a '\[dev\]' "$f" || true
+              grep -a -E 'could not (create the tray icon|register global shortcut)' "$f" || echo "(no tray or shortcut error logged)"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # An unsupported runner label (macos-14 after its retirement) cancels the
+  # Apple Silicon job before any step runs. GitHub then reports that job as
+  # cancelled, which is not a failure, so the commit can look green. This
+  # job runs only in that case and fails the workflow. After a real success
+  # it stays skipped: a second runner that never starts was turning green
+  # builds red.
+  require-success:
+    name: macOS job must succeed
+    runs-on: ubuntu-latest
+    if: always() && needs.arm64.result != 'success'
+    needs: arm64
+    steps:
+      - name: Fail unless the Apple Silicon job succeeded
+        run: |
+          result="${{ needs.arm64.result }}"
+          echo "macOS job result: $result"
+          echo "A cancelled, skipped, or failed macOS job is not a pass."
+          exit 1

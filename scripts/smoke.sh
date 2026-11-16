@@ -29,7 +29,9 @@ script=${1:-smoke-ui.js}
 [ -f "$here/$script" ] || { echo "no such test script: $here/$script" >&2; exit 1; }
 
 export LOFT_DATA_DIR="${LOFT_DATA_DIR:-/tmp/loft-smoke-profile}"
-export LOFT_SEED_FOLDER="$root/sample-docs"
+# A caller can point this at another folder (the Linux promo run uses a
+# larger copy of sample-docs so indexing stays on screen).
+export LOFT_SEED_FOLDER="${LOFT_SEED_FOLDER:-$root/sample-docs}"
 export LOFT_DEV_EVAL="$here/$script"
 mkdir -p "$LOFT_DATA_DIR"
 

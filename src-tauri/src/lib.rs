@@ -1399,6 +1399,19 @@ fn size_notch(window: &tauri::WebviewWindow, expanded: bool, placement: Placemen
 fn move_and_size(window: &tauri::WebviewWindow, origin: (i32, i32), size: (i32, i32)) {
     let position = tauri::PhysicalPosition::new(origin.0, origin.1);
     let new_size = tauri::PhysicalSize::new(size.0 as u32, size.1 as u32);
+    // GTK will not shrink a window below its first size while that window is
+    // non-resizable, and the first configure event locks the flag back off.
+    // The size that sticks is the one given as both the minimum and the
+    // maximum. The window stays notionally resizable; those two bounds are
+    // equal, so it cannot be dragged to another size.
+    #[cfg(target_os = "linux")]
+    {
+        let fixed = tauri::Size::Physical(new_size);
+        let _ = window.set_resizable(true);
+        let _ = window.set_min_size(Some(tauri::Size::Physical(tauri::PhysicalSize::new(1, 1))));
+        let _ = window.set_max_size(Some(fixed));
+        let _ = window.set_min_size(Some(fixed));
+    }
     // Order matters at a screen edge: growing in place first would spill onto
     // the next display, and so would moving before shrinking.
     let growing = window
@@ -1867,6 +1880,22 @@ pub fn run() {
                 dock(&win, &app.state::<AppState>(), false);
                 if !(tray_only && tray_ok) {
                     let _ = win.show();
+                }
+                // The window's first configure event (on show) forces the
+                // resizable flag from tauri.conf and, on GTK, that throws
+                // away a size set just before. Place it again once that has
+                // happened. By then the dev script has not started (it waits
+                // several seconds).
+                #[cfg(target_os = "linux")]
+                {
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                        if let Some(win) = handle.get_webview_window("notch") {
+                            let state = handle.state::<AppState>();
+                            dock(&win, &state, false);
+                        }
+                    });
                 }
             }
 

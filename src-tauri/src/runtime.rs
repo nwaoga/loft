@@ -818,12 +818,33 @@ mod tests {
             }
         }
         assert_eq!(inventory.revision, LLAMA_REVISION);
-        if find_binary(&rt.roots, Backend::Cpu).is_none() {
+        // The standard engine is CPU on Windows and Linux, Metal on Apple
+        // silicon. Skip only when nothing at all has been fetched.
+        let installed: Vec<Backend> = supported_backends().iter().copied().filter(|b| find_binary(&rt.roots, *b).is_some()).collect();
+        if installed.is_empty() {
             eprintln!("skip: no llama.cpp builds here (run `npm run fetch-llama`)");
             return;
         }
-        let cpu = inventory.backend(Backend::Cpu).expect("the CPU backend is listed");
-        assert_eq!(cpu.status, BackendStatus::Available);
+        for backend in &installed {
+            let info = inventory.backend(*backend).unwrap_or_else(|| panic!("{} is listed", backend.label()));
+            match info.status {
+                BackendStatus::Available => {}
+                // `fetch-llama` installs the GPU builds on Linux even when the
+                // machine has no GPU. "No device" and "no driver" are answers.
+                // A build that cannot be asked (Failed) is still a failure,
+                // and the CPU and Metal builds have to be usable when present.
+                BackendStatus::HardwareUnavailable | BackendStatus::DriverMissing
+                    if !matches!(*backend, Backend::Cpu | Backend::Metal) =>
+                {
+                    eprintln!(
+                        "note: {} is installed but this machine cannot run it ({})",
+                        backend.label(),
+                        info.detail.as_deref().unwrap_or("")
+                    );
+                }
+                other => panic!("{} is {other:?}: {}", backend.label(), info.detail.as_deref().unwrap_or("")),
+            }
+        }
         // Whatever is available can be resolved, and something is the default.
         let default = rt.default_target().expect("a default target");
         eprintln!("default target: {}", default.label());
