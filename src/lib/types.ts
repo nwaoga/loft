@@ -42,6 +42,20 @@ export interface FolderInfo {
   error?: string;
 }
 
+/** What happened to the files dropped on the window. Each list holds names. */
+export interface AddDocumentsResult {
+  /** Copied into the library and queued for indexing. */
+  added: string[];
+  /** Already in the library (same content): nothing to do. */
+  duplicates: string[];
+  /** Copied but not indexed — no parser handles this type. */
+  storedOnly: string[];
+  /** Folders added in place as their own watched folders. */
+  foldersAdded: string[];
+  /** Items that could not be read or copied, each as "name: why". */
+  failed: string[];
+}
+
 export interface Source {
   file: string;
   path: string;

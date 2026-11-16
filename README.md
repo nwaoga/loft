@@ -78,6 +78,7 @@ Add a folder, or remove one, and ask about what is in it: text and code, PDF, Wo
   <img src="docs/screenshots/folders.png" width="640" alt="The Folders tab while a folder is indexing, showing the file count and the current file" />
 </p>
 
+- **Drag files straight onto the window** to add them without the folder picker. A dropped file is copied into a Loft **library** (kept at `<app data>/Library/`, so it stays even if you move or delete the original) and indexed; dropping the same file twice does nothing, and a type Loft can't read is kept but not indexed. Drop a folder and it is added in place. The library appears in **Folders** once you have dropped something.
 - While a folder indexes it shows the file count and, for a large file, how far through that file it is.
 - A file is capped at 2,000 chunks (about 3 MB of text). The folder says how many files were cut short. Rebuild to apply the cap to an older index.
 - Pictures and scanned PDF pages are read with the OCR built into Windows. On macOS and Linux they yield no text. A picture with no readable text is not indexed, unless picture descriptions are on.

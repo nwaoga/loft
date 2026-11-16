@@ -14,6 +14,20 @@ export const ui = $state({
   large: false,
 });
 
+/** A short line about the last drag-and-drop, shown in the Ask view. */
+export interface DropNote {
+  text: string;
+  tone: "ok" | "warn";
+}
+
+/** Drag-and-drop of files onto the window: the live drag, and the result note. */
+export const drop = $state({
+  /** A drag is hovering the window (drives the drop overlay). */
+  dragging: false,
+  /** The outcome of the last drop, shown in the Ask view until dismissed. */
+  note: null as DropNote | null,
+});
+
 /** Size the panel; the layout reads these. */
 export function applyPanelSize(size: PanelSize) {
   const root = document.documentElement.style;

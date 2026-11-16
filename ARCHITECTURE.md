@@ -91,7 +91,7 @@ mock data, which is how the UI is developed and previewed without building the b
 | `chunk.rs` | Splits sections into overlapping chunks on paragraph boundaries. |
 | `embed.rs` | Client for the embedding server. |
 | `indexer.rs` | Brings one folder's index up to date. Free of Tauri types, so it is tested directly. |
-| `jobs.rs` | Index queue, file watchers with debouncing, folder commands, progress events. |
+| `jobs.rs` | Index queue, file watchers with debouncing, folder commands, progress events, and `add_documents` (files dropped on the window: copy into the library, add dropped folders in place). |
 | `store.rs` | The SQLite database: folders, files, chunks, vectors, search. |
 | `rag.rs` | Retrieval, prompts, chat options, follow-up rewriting, answer streaming, usage stats. |
 | `history.rs` | Chat history: conversations, messages and each answer's sources, in their own database. Storage only: it builds no prompt. |
@@ -104,6 +104,7 @@ mock data, which is how the UI is developed and previewed without building the b
 |---|---|
 | Models (`*.gguf`) | `<app data>/models/` |
 | Index (`loft.db`) | `<app data>/` |
+| Library: files dropped on the window | `<app data>/Library/` |
 | Model selection, window style and position, placement, display, picture model, engine choices (`selection.json`) | `<app data>/` |
 | Performance measurements (`benchmarks.json`) | `<app data>/` |
 | Optional engines installed from Settings | `<app data>/engines/` |
@@ -175,6 +176,24 @@ seconds at most) before they queue a run.
 
 With a picture model selected, each picture is also described: the model is started the first
 time a run needs it and stopped when the run ends.
+
+### Adding files by drag-and-drop
+
+Files dropped on the window (`add_documents` in `jobs.rs`) are added without the folder
+picker. There is no separate ingest path: the drop feeds the same pipeline above.
+
+- A loose **file** is copied into the **library** — a folder Loft owns at `<app data>/Library/`.
+  The library is an ordinary row in `folders`, registered the first time something is dropped
+  (so a fresh install still shows "no folders yet"), with a watcher of its own. The copy is
+  deduplicated by blake3: dropping the same bytes again is a no-op; a name already taken by
+  different content gets a " (2)" suffix. A type no parser handles is still copied but not
+  indexed, and the result says so.
+- A dropped **folder** is registered in place as its own watched folder, not copied — its tree
+  can be large and already lives somewhere.
+- After a drop the library is queued for an incremental run, so new files are searchable at
+  once (the watcher would also catch them; this is just immediate). The chat window is the
+  drop surface: `src/App.svelte` listens for the webview drag-drop event, shows the overlay,
+  and reports the outcome in the Ask view (`src/lib/state.svelte.ts` holds the shared state).
 
 ### Answering a question
 

@@ -47,6 +47,22 @@ Smaller changes that came out of testing, worth knowing about:
   couldn't find that in your indexed files. I'm only really here to talk about items in
   sample-docs." See "How answers work" in [docs/how-it-works.md](docs/how-it-works.md). Checked with Qwen 2.5 3B only; whether
   other chat models repeat the longer refusal word for word is not known.
+- Added 16 November 2026: **drag a file onto the window to add it.** Files dropped on the
+  window are copied into a Loft **library** (`<app data>/Library`) and indexed; folders are
+  added in place as their own watched folders. The library is registered the first time
+  something is dropped — as an ordinary watched folder, so the existing indexer and watcher
+  do the work — and a fresh install still shows "no folders yet" until then. Loose files are
+  deduplicated by blake3 (re-dropping is a no-op; a name clash with different content gets
+  "(2)"); types with no parser are copied but not indexed and said to be. The chat window is
+  the drop surface: dragging over opens the Ask view with a "Drop to add to Loft" overlay, and
+  the result is reported in the chat ("Added report.pdf — ask away."). Main files:
+  `src-tauri/src/jobs.rs` (`add_documents`, `ensure_library`, `copy_into_library`),
+  `src-tauri/src/lib.rs` (`library_dir`), `src/App.svelte`, `src/lib/components/Ask.svelte`,
+  `src/lib/{api.ts,state.svelte.ts,types.ts}`. **Verified:** `cargo check` clean,
+  `npm run check` (svelte-check) clean, dev build launches. **Not verified:** a real drag-drop
+  in the running app (the OS drop event, the copy, the index, the banner) has not been
+  exercised end to end; no automated test covers it yet. Worth checking: dropping one file, a
+  folder, an unsupported type (e.g. a `.zip`), and the same file twice.
 
 ## 2. What was verified, and where
 

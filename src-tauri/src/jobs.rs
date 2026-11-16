@@ -515,6 +515,160 @@ pub async fn add_folder(app: AppHandle) -> Result<Option<FolderInfo>, String> {
     Ok(Some(info))
 }
 
+/// What `add_documents` did with the dropped items. File lists hold names
+/// (not full paths), so the UI can say "Added report.pdf" without leaking the
+/// source location.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AddDocumentsResult {
+    /// Files copied into the library and queued for indexing.
+    pub added: Vec<String>,
+    /// Files already in the library (same content): nothing to do.
+    pub duplicates: Vec<String>,
+    /// Files copied but not indexed — no parser handles this type.
+    pub stored_only: Vec<String>,
+    /// Folders added in place as their own watched folders.
+    pub folders_added: Vec<String>,
+    /// Items that could not be read or copied, each as "name: why".
+    pub failed: Vec<String>,
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// A loose file copied into the library, or recognised as already there.
+enum Copied {
+    /// Newly written at this path.
+    New(PathBuf),
+    /// The same content is already in the library (a no-op).
+    Duplicate,
+}
+
+/// Copy `src` into the library, skipping it when the same content is already
+/// there (dedup by blake3), and avoiding name clashes with different content
+/// by suffixing " (2)", " (3)", …
+fn copy_into_library(library: &Path, src: &Path) -> Result<Copied, String> {
+    let name = src.file_name().ok_or("that file has no name")?;
+    let bytes = std::fs::read(src).map_err(|e| format!("read failed: {e}"))?;
+    let hash = blake3::hash(&bytes);
+
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = src.extension().map(|e| e.to_string_lossy().into_owned());
+
+    let mut candidate = library.join(name);
+    let mut n = 1u32;
+    loop {
+        match std::fs::read(&candidate) {
+            Ok(existing) => {
+                if blake3::hash(&existing) == hash {
+                    return Ok(Copied::Duplicate); // already have this exact file
+                }
+                // Name taken by different content: try the next suffix.
+                n += 1;
+                let next = match &ext {
+                    Some(ext) => format!("{stem} ({n}).{ext}"),
+                    None => format!("{stem} ({n})"),
+                };
+                candidate = library.join(next);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("cannot check {}: {e}", candidate.display())),
+        }
+    }
+    std::fs::write(&candidate, &bytes).map_err(|e| format!("copy failed: {e}"))?;
+    Ok(Copied::New(candidate))
+}
+
+/// Register `path` as its own watched folder (used when a folder is dropped:
+/// its tree stays where it is rather than being copied into the library).
+fn add_watched_folder(app: &AppHandle, path: &Path) -> Result<String, String> {
+    let path_str = path.to_string_lossy().into_owned();
+    let folder_id = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        store.add_folder(&path_str)?
+    };
+    start_watcher(app, folder_id, &path_str);
+    request_index(app, folder_id, false);
+    Ok(file_name(path))
+}
+
+/// Make sure the library exists on disk and is registered as a watched
+/// folder, returning its id. Called the first time a file is dropped, so a
+/// fresh install has no empty library folder until it is actually used.
+fn ensure_library(app: &AppHandle) -> Result<i64, String> {
+    let library_dir = app.state::<AppState>().library_dir.clone();
+    std::fs::create_dir_all(&library_dir)
+        .map_err(|e| format!("cannot create the Loft library: {e}"))?;
+    let path = library_dir.to_string_lossy().into_owned();
+
+    let (id, already) = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        let existed = store.list_folders()?.iter().any(|f| f.path == path);
+        (store.add_folder(&path)?, existed) // INSERT OR IGNORE, returns the id either way
+    };
+    let watching = app.state::<AppState>().index.watchers.lock().unwrap().contains_key(&id);
+    if !already || !watching {
+        start_watcher(app, id, &path);
+    }
+    Ok(id)
+}
+
+/// Files (and folders) dropped on the window: copy each loose file into the
+/// Loft library and queue it for indexing; add dropped folders in place as
+/// their own watched folders. The library is an ordinary watched folder, so
+/// the existing pipeline does the indexing.
+#[tauri::command]
+pub async fn add_documents(app: AppHandle, paths: Vec<String>) -> Result<AddDocumentsResult, String> {
+    let library_id = ensure_library(&app)?;
+    let library_dir = app.state::<AppState>().library_dir.clone();
+
+    let mut result = AddDocumentsResult::default();
+    let mut copied_any = false;
+
+    for raw in paths {
+        let src = PathBuf::from(&raw);
+        let name = file_name(&src);
+        let meta = match std::fs::metadata(&src) {
+            Ok(m) => m,
+            Err(e) => {
+                result.failed.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            match add_watched_folder(&app, &src) {
+                Ok(folder) => result.folders_added.push(folder),
+                Err(e) => result.failed.push(format!("{name}: {e}")),
+            }
+            continue;
+        }
+        match copy_into_library(&library_dir, &src) {
+            Ok(Copied::New(dest)) => {
+                copied_any = true;
+                let dest_name = file_name(&dest);
+                if crate::parse::kind_for(&dest).is_some() {
+                    result.added.push(dest_name);
+                } else {
+                    result.stored_only.push(dest_name);
+                }
+            }
+            Ok(Copied::Duplicate) => result.duplicates.push(name),
+            Err(e) => result.failed.push(format!("{name}: {e}")),
+        }
+    }
+
+    // Index the library now so the new files are searchable immediately. (The
+    // watcher would also notice them, but this is instant and explicit.)
+    if copied_any {
+        request_index(&app, library_id, false);
+    }
+    emit_changed(&app);
+    Ok(result)
+}
+
 #[tauri::command]
 pub fn reindex_folder(app: AppHandle, id: String) -> Result<(), String> {
     let folder_id = parse_id(&id)?;

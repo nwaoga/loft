@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { ask, cancelAsk, getConversation, importConversation, openSource } from "../api";
-  import { ui, type Tab } from "../state.svelte";
+  import { ui, drop, type Tab } from "../state.svelte";
   import type { AskStats, Conversation, MessageStatus, SavedMessage, Source } from "../types";
   import { fileTag } from "../format";
   import { chatOptions, answerOptions, chatOptionsChanged } from "../chat-options.svelte";
@@ -194,6 +194,7 @@
   async function submit() {
     const q = question.trim();
     if (!q || busy) return;
+    drop.note = null; // asking a question clears the last drop note
     // Turns that never got an answer (stopped at once, failed) are not context;
     // and with "Remember conversation context" off, nothing is.
     const history = chatOptions.remember
@@ -397,6 +398,15 @@
     {/if}
   </div>
 
+  {#if drop.note}
+    <div class="drop-note" class:warn={drop.note.tone === "warn"} role="status">
+      <span class="drop-note-text">{drop.note.text}</span>
+      <button class="drop-note-x" onclick={() => (drop.note = null)} aria-label="Dismiss">
+        <Icon name="x" size={12} stroke={2.4} />
+      </button>
+    </div>
+  {/if}
+
   <div class="thread scroll" bind:this={threadEl} onscroll={onThreadScroll}>
     {#if turns.length === 0 && !hint}
       <div class="examples">
@@ -588,6 +598,43 @@
     gap: 4px;
     min-height: 24px;
     margin: -4px 0 -4px -3px;
+  }
+
+  /* Feedback after files are dropped on the window, shown in the chat view. */
+  .drop-note {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0 2px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    font-size: 12.5px;
+    line-height: 1.35;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 16%, var(--field-bg));
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .drop-note.warn {
+    background: color-mix(in srgb, var(--danger, #e5484d) 14%, var(--field-bg));
+    border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, transparent);
+  }
+  .drop-note-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .drop-note-x {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    color: var(--text-dim);
+  }
+  .drop-note-x:hover {
+    color: var(--text);
+    background: var(--field-bg-hover);
   }
   .bar-btn {
     flex: none;

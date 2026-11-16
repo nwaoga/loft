@@ -195,6 +195,9 @@ where
 struct AppState {
     runtime: Mutex<Runtime>,
     models_dir: PathBuf,
+    /// The Loft library: a folder Loft owns, where files dropped on the window
+    /// are copied and indexed. Registered as an ordinary watched folder.
+    library_dir: PathBuf,
     config_path: PathBuf,
     catalog: Vec<CatalogEntry>,
     selection: Mutex<Selection>,
@@ -1792,6 +1795,12 @@ pub fn run() {
                     eprintln!("Loft: {n} files with no text will be read again (better parsers)");
                 }
             }
+            // The Loft library: a folder Loft owns, where files dropped on the
+            // window are kept and indexed. It is registered as an ordinary
+            // watched folder the first time something is dropped (see
+            // jobs::add_documents), so a fresh install still shows "no folders
+            // yet" until the user actually adds or drops something.
+            let library_dir = data.join("Library");
             // Dev aid (debug builds): LOFT_SEED_FOLDER registers a folder at
             // launch, since a test cannot click through the native folder picker.
             #[cfg(debug_assertions)]
@@ -1835,6 +1844,7 @@ pub fn run() {
                 bench: bench::BenchState::new(bench_path),
                 usage: Mutex::new(usage::Meter::default()),
                 models_dir,
+                library_dir,
                 config_path,
                 catalog,
                 selection: Mutex::new(selection),
@@ -1970,6 +1980,7 @@ pub fn run() {
             download_model,
             jobs::list_folders,
             jobs::add_folder,
+            jobs::add_documents,
             jobs::reindex_folder,
             jobs::delete_index,
             jobs::remove_folder,

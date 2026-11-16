@@ -24,6 +24,7 @@ import type {
   AskStats,
   ChatTurn,
   FolderInfo,
+  AddDocumentsResult,
   MonitorInfo,
   ModelInfo,
   RuntimeStatus,
@@ -741,6 +742,43 @@ export async function addFolder(): Promise<FolderInfo | null> {
   };
   mockFolders = [...mockFolders, f];
   return f;
+}
+
+/**
+ * Copy files dropped on the window into the Loft library and index them
+ * (folders are added in place as their own watched folders). Returns what
+ * happened to each item.
+ */
+export async function addDocuments(paths: string[]): Promise<AddDocumentsResult> {
+  if (isTauri()) return invoke<AddDocumentsResult>("add_documents", { paths });
+  // Preview: pretend the drop added a file to a mock library folder.
+  const names = paths.map((p) => p.split(/[\\/]/).pop() || p);
+  let lib = mockFolders.find((f) => f.path.endsWith("Library"));
+  if (!lib) {
+    lib = { id: "lib", path: "~/Loft/Library", status: "ready", fileCount: 0, chunkCount: 0 };
+    mockFolders = [...mockFolders, lib];
+  }
+  lib.fileCount += names.length;
+  return { added: names, duplicates: [], storedOnly: [], foldersAdded: [], failed: [] };
+}
+
+/**
+ * OS files dragged over / dropped on the window. `onDrop` gets the dropped
+ * file paths; `onOver`/`onLeave` drive the drop affordance. No-op outside Tauri.
+ */
+export async function onFileDrop(handlers: {
+  onOver?: () => void;
+  onDrop: (paths: string[]) => void;
+  onLeave?: () => void;
+}): Promise<Unsub> {
+  if (!isTauri()) return () => {};
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  return getCurrentWebview().onDragDropEvent((event) => {
+    const p = event.payload;
+    if (p.type === "over") handlers.onOver?.();
+    else if (p.type === "drop") handlers.onDrop(p.paths);
+    else if (p.type === "leave") handlers.onLeave?.();
+  });
 }
 
 export async function reindexFolder(id: string): Promise<void> {
