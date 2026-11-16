@@ -1,6 +1,6 @@
 [package]
 name = "loft"
-version = "0.1.1"
+version = "0.1.2"
 description = "Loft — a local RAG notch app over your folders, powered by llama.cpp."
 authors = ["you"]
 edition = "2021"
