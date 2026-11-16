@@ -27,6 +27,12 @@
   <a href="docs/known-gaps.md"><strong>Known gaps</strong></a>
 </p>
 
+## Download
+
+**Windows (x64).** Loft 0.1.2 is a full release. Download [Loft_0.1.2_x64-setup.exe](https://github.com/nwaoga/loft/releases/tag/v0.1.2) or [Loft_0.1.2_x64_en-US.msi](https://github.com/nwaoga/loft/releases/tag/v0.1.2). The `.exe` installs for the current user (no administrator needed) and adds Loft to the Start menu. Settings, models and indexes are kept in `%APPDATA%\com.loft.desktop`. The installer is unsigned, so Windows SmartScreen may warn: choose More info, then Run anyway. Check the download against `SHA256SUMS.txt`.
+
+**macOS and Linux.** No installer in this release yet. Build from source using the steps below.
+
 ## Quick start
 
 Node.js 18+ and Rust 1.85 or newer (the lockfile is edition 2024). Windows also needs the MSVC C++ build tools and the Windows 10/11 SDK. WebView2 is the webview, and it is already on Windows 11. Linux needs the packages in [Building](docs/building.md), including WebKitGTK 4.1 and the tray library. macOS needs the Xcode command-line tools.
