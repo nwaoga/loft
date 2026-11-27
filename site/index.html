@@ -48,12 +48,16 @@
     footer { border-top:1px solid var(--line); border-bottom:0; font-size:.9rem }
     @media(max-width:800px) { .hero,.overview { grid-template-columns:1fr; padding:3rem 0 } }
     @media(max-width:500px) { nav { gap:.8rem; font-size:.9rem } header { gap:.7rem } }
+    .guide .shot { display:block; padding:clamp(.4rem,1.5vw,1.3rem); border-radius:1rem; background:#26342c; border:1px solid var(--line) }
+    .guide p { margin-top:1rem }
+    .guide figure { min-width:0 }
+    .guide img { box-shadow:none }
   </style>
 </head>
 <body>
   <header>
     <a class="brand" href="#top"><img src="https://raw.githubusercontent.com/nwaoga/loft/main/src-tauri/icons/128x128.png" alt="">Loft</a>
-    <nav aria-label="Main navigation"><a href="#how">How it works</a><a href="#developers">Developers</a><a href="https://github.com/nwaoga/loft">GitHub</a></nav>
+    <nav aria-label="Main navigation"><a href="#setup">Getting started</a><a href="#power">Performance</a><a href="#developers">Developers</a><a href="https://github.com/nwaoga/loft">GitHub</a></nav>
   </header>
   <main id="top">
     <section class="hero" aria-labelledby="headline">
@@ -65,16 +69,28 @@
       </div>
       <figure><div class="stage"><img src="https://raw.githubusercontent.com/nwaoga/loft/main/docs/screenshots/answer.png" alt="Loft answering a question on Linux, with its source excerpts expanded"></div><figcaption>An answer in Loft with the source drawer open.</figcaption></figure>
     </section>
+    <section class="overview guide" id="setup" aria-labelledby="setup-title">
+      <div><h2 id="setup-title">Set up your first models.</h2><p>Open the settings gear. Under <strong>Chat model</strong>, download and select Qwen2.5 3B Instruct. This model writes your answers.</p><p>Under <strong>Embedding model</strong>, select Nomic Embed Text v1.5. It finds passages related to your question. Once both models are active, you can index folders and ask questions offline.</p></div>
+      <figure><a class="shot" href="./images/models.png" aria-label="Open full-size screenshot: Chat and embedding model lists with Qwen and Nomic marked active"><img loading="lazy" src="./images/models.png" alt="Chat and embedding model lists with Qwen and Nomic marked active"></a><figcaption>The active labels show which two models Loft will use · <a href="./images/models.png">View full size</a></figcaption></figure>
+    </section>
     <section class="overview" id="how" aria-labelledby="how-title">
       <div>
         <h2 id="how-title">From a folder<br>to its sources.</h2>
         <ol class="steps">
-          <li><h3>Choose what Loft can read</h3><p>Download a chat model and an embedding model, then add a folder. Loft indexes its contents and keeps up with changes.</p></li>
-          <li><h3>Ask from your desktop</h3><p>Press Ctrl+Shift+Space on Windows or Cmd+Shift+Space on Mac to open Loft and ask about your documents or code.</p></li>
+          <li><h3>Choose what Loft can read</h3><p>Open <strong>Folders</strong> and add a folder of project notes, or drag the folder onto Loft. Wait for indexing to finish.</p></li>
+          <li><h3>Ask from your desktop</h3><p>Press Ctrl+Shift+Space on Windows or Cmd+Shift+Space on Mac to open Loft. In <strong>Ask</strong>, try a question with an answer in your notes, such as “Which tasks are still open for release?”</p></li>
           <li><h3>Check the original</h3><p>Expand the sources beneath a reply to read the excerpts. Open a document or reveal a source file in its folder.</p></li>
         </ol>
       </div>
       <figure><div class="stage"><img loading="lazy" src="https://raw.githubusercontent.com/nwaoga/loft/main/docs/screenshots/folders.png" alt="Loft’s Folders tab showing indexing progress for a selected folder"></div><figcaption>The Folders tab shows what Loft is indexing.</figcaption></figure>
+    </section>
+    <section class="overview guide" id="power" aria-labelledby="power-title">
+      <div><h2 id="power-title">Choose how Loft runs on battery.</h2><p>Open <strong>Settings → Performance &amp; battery</strong>. Choose a profile for <strong>When plugged in</strong> and another for <strong>When running on battery</strong>. Enable <strong>Switch when the power source changes</strong> to use both.</p><p>The Chat and Embeddings rows show the device each model actually uses. If Loft falls back to another engine, the panel explains why.</p></div>
+      <figure><a class="shot" href="./images/power.png" aria-label="Open full-size screenshot: Plugged-in status, active devices and the two power profile selectors"><img loading="lazy" src="./images/power.png" alt="Plugged-in status, active devices and the two power profile selectors"></a><figcaption>Chat and embeddings are running on the NVIDIA GPU in this example · <a href="./images/power.png">View full size</a></figcaption></figure>
+    </section>
+    <section class="overview guide" id="benchmark" aria-labelledby="benchmark-title">
+      <div><h2 id="benchmark-title">Test your own hardware.</h2><p>In the same panel, open <strong>Test performance</strong> and run the test. Loft asks each installed engine the same question with your chat model. Compare time to first token for responsiveness and tokens per second for generation speed.</p><p>On the laptop shown, the RTX 4050 reached 58 tokens/s, Intel Iris Xe reached 8.7, and CPU reached 4.3. To compare battery use, unplug and test again.</p></div>
+      <figure><a class="shot" href="./images/benchmark.png" aria-label="Open full-size screenshot: Benchmark results comparing an RTX 4050, Intel Iris Xe graphics and CPU"><img loading="lazy" src="./images/benchmark.png" alt="Benchmark results comparing an RTX 4050, Intel Iris Xe graphics and CPU"></a><figcaption>One laptop’s plugged-in results, with the fastest engine recommended below · <a href="./images/benchmark.png">View full size</a></figcaption></figure>
     </section>
     <section class="build" id="developers">
       <h2>Build your own Loft.</h2>
