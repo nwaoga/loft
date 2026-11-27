@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loft — Ask your files offline</title>
+  <meta name="description" content="Ask questions about your folders and open the sources behind each answer. Loft runs open-source AI on your computer.">
+  <meta property="og:title" content="Loft — Ask your files offline">
+  <meta property="og:description" content="A desktop assistant for the folders you choose, powered by local models.">
+  <meta property="og:image" content="https://raw.githubusercontent.com/nwaoga/loft/main/docs/screenshots/answer.png">
+  <link rel="icon" href="https://raw.githubusercontent.com/nwaoga/loft/main/src-tauri/icons/128x128.png">
+  <style>
+    :root { color-scheme: dark; --bg:#101514; --ink:#f2f6ed; --soft:#b5c4ba; --mint:#c0f49f; --line:#344039 }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--bg); color:var(--ink); font:1rem/1.6 Inter,system-ui,sans-serif }
+    main, header, footer { width:min(1200px,91%); margin:auto }
+    header, nav, .brand, .actions, footer { display:flex; align-items:center; gap:1.4rem; flex-wrap:wrap }
+    header, footer { justify-content:space-between; padding:1.2rem 0; border-bottom:1px solid var(--line) }
+    a { color:inherit; text-underline-offset:.25em }
+    nav a, .brand, .button { text-decoration:none }
+    nav a:hover, footer a:hover { color:var(--mint); text-decoration:underline }
+    a:focus-visible { outline:3px solid var(--mint); outline-offset:5px }
+    .brand { font-size:1.45rem; font-weight:750; gap:.5rem }
+    .brand img { width:36px; height:36px }
+    .hero,.overview { display:grid; align-items:center; gap:clamp(2rem,5vw,5rem); grid-template-columns:.87fr 1.13fr; padding:clamp(4rem,8vw,7rem) 0 }
+    h1,h2,h3,p,figure { margin:0 }
+    h1,h2,h3 { line-height:1.03; letter-spacing:-.055em }
+    h1 { font-size:clamp(3.4rem,6.3vw,6.2rem) }
+    h1 span { color:var(--mint); display:block }
+    h2 { font-size:clamp(2.3rem,4vw,4rem) }
+    h3 { font-size:1.35rem; letter-spacing:-.025em }
+    p { color:var(--soft); max-width:54ch }
+    .lede { font-size:1.18rem; margin:1.45rem 0 }
+    .actions { gap:.7rem; margin:1.7rem 0 .75rem }
+    .button { display:inline-block; font-weight:650; padding:.7rem 1.05rem; border:1px solid var(--line); border-radius:.55rem }
+    .button:hover { border-color:var(--mint) }
+    .primary { background:var(--mint); color:#152114 }
+    small, figcaption { color:var(--soft); font-size:.86rem }
+    .stage { padding:clamp(1rem,3vw,2.9rem); background:radial-gradient(ellipse at 80% 0%,#568066 0,transparent 64%),repeating-linear-gradient(130deg,#223c34 0 22px,#29483e 23px 24px); border:1px solid #4b6455; border-radius:1.25rem }
+    figure img { display:block; width:100%; height:auto; border-radius:.55rem; box-shadow:0 12px 38px #06120c66 }
+    figcaption { padding:.7rem .2rem 0 }
+    .overview { grid-template-columns:1fr 1fr; border-top:1px solid var(--line) }
+    .steps { padding:0; list-style:none; margin:1.8rem 0 0 }
+    .steps li { padding:1rem 0; border-top:1px solid var(--line) }
+    .steps p { margin-top:.45rem }
+    .build { padding:clamp(1.8rem,5vw,4rem); background:#1b2721; border-radius:1.15rem; margin-bottom:4rem }
+    .build p { margin:1rem 0 }
+    footer { border-top:1px solid var(--line); border-bottom:0; font-size:.9rem }
+    @media(max-width:800px) { .hero,.overview { grid-template-columns:1fr; padding:3rem 0 } }
+    @media(max-width:500px) { nav { gap:.8rem; font-size:.9rem } header { gap:.7rem } }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="brand" href="#top"><img src="https://raw.githubusercontent.com/nwaoga/loft/main/src-tauri/icons/128x128.png" alt="">Loft</a>
+    <nav aria-label="Main navigation"><a href="#how">How it works</a><a href="#developers">Developers</a><a href="https://github.com/nwaoga/loft">GitHub</a></nav>
+  </header>
+  <main id="top">
+    <section class="hero" aria-labelledby="headline">
+      <div>
+        <h1 id="headline">Ask your files.<span>Stay offline.</span></h1>
+        <p class="lede">Pick a folder and ask Loft a question. Get an answer with excerpts you can open, using an AI model running on your computer.</p>
+        <div class="actions"><a class="button primary" href="https://github.com/nwaoga/loft/releases/latest">Download for Windows</a><a class="button" href="https://github.com/nwaoga/loft">View source</a></div>
+        <small>Windows x64 · <a href="https://github.com/nwaoga/loft/blob/main/docs/first-open.md">Unsigned installer guide</a></small>
+      </div>
+      <figure><div class="stage"><img src="https://raw.githubusercontent.com/nwaoga/loft/main/docs/screenshots/answer.png" alt="Loft answering a question on Linux, with its source excerpts expanded"></div><figcaption>An answer in Loft with the source drawer open.</figcaption></figure>
+    </section>
+    <section class="overview" id="how" aria-labelledby="how-title">
+      <div>
+        <h2 id="how-title">From a folder<br>to its sources.</h2>
+        <ol class="steps">
+          <li><h3>Choose what Loft can read</h3><p>Download a chat model and an embedding model, then add a folder. Loft indexes its contents and keeps up with changes.</p></li>
+          <li><h3>Ask from your desktop</h3><p>Press Ctrl+Shift+Space on Windows or Cmd+Shift+Space on Mac to open Loft and ask about your documents or code.</p></li>
+          <li><h3>Check the original</h3><p>Expand the sources beneath a reply to read the excerpts. Open a document or reveal a source file in its folder.</p></li>
+        </ol>
+      </div>
+      <figure><div class="stage"><img loading="lazy" src="https://raw.githubusercontent.com/nwaoga/loft/main/docs/screenshots/folders.png" alt="Loft’s Folders tab showing indexing progress for a selected folder"></div><figcaption>The Folders tab shows what Loft is indexing.</figcaption></figure>
+    </section>
+    <section class="build" id="developers">
+      <h2>Build your own Loft.</h2>
+      <p>Start with the sample documents or run the notch UI with mock data. The MIT-licensed source includes the Tauri desktop app and its local llama.cpp integration.</p>
+      <div class="actions"><a class="button primary" href="https://github.com/nwaoga/loft/blob/main/docs/building.md">Build from source</a><a class="button" href="https://github.com/nwaoga/loft/tree/main/sample-docs">Explore sample documents</a></div>
+      <small>Build instructions for Windows, macOS and Linux.</small>
+    </section>
+  </main>
+  <footer><strong>Loft</strong><a href="https://github.com/nwaoga/loft/issues">Feedback and issues</a><a href="https://github.com/nwaoga/loft/blob/main/LICENSE">MIT licence</a></footer>
+</body>
+</html>
